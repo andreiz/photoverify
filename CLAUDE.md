@@ -19,17 +19,20 @@ python -m black .
 ### Running the Application
 ```bash
 # Scan NAS
-python main.py scan /path/to/nas --db photos.db
+python photocheck.py scan /path/to/nas --db photos.db
 
-# Verify SD card
-python main.py verify /media/sdcard --db photos.db
+# Verify SD card  
+python photocheck.py verify /media/sdcard --db photos.db
 
 # Clean up database
-python main.py cleanup --mark-missing --db photos.db
+python photocheck.py cleanup --mark-missing --db photos.db
+
+# Use config file
+python photocheck.py --config config.yaml scan /nas/photos
 ```
 
 ## Project Structure
-- `main.py` - CLI interface
+- `photocheck.py` - CLI interface
 - `photo_scanner.py` - NAS scanning and metadata extraction
 - `sd_verifier.py` - SD card verification logic
 - `database.py` - SQLite database operations

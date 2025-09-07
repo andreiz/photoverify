@@ -5,30 +5,38 @@ from pathlib import Path
 import click
 
 from cleanup import DatabaseCleaner
+from config import Config
 from database import DatabaseManager
 from photo_scanner import PhotoScanner
 from sd_verifier import SDCardVerifier
 
 
 @click.group()
-@click.option('--db', default='photos.db', 
-              help='Path to SQLite database file (default: photos.db)')
+@click.option('--config', '-c', help='Path to configuration file')
+@click.option('--db', help='Path to SQLite database file (overrides config)')
 @click.pass_context
-def cli(ctx, db):
+def cli(ctx, config, db):
     """PhotoCheck - Verify SD card photos are backed up to NAS"""
     ctx.ensure_object(dict)
     
-    # Expand relative paths and environment variables
-    db_path = Path(db).expanduser().resolve()
-    ctx.obj['db_path'] = str(db_path)
-    ctx.obj['db_manager'] = DatabaseManager(str(db_path))
+    # Load configuration
+    ctx.obj['config'] = Config(config)
+    
+    # Database path: CLI option > config file > default
+    if db:
+        db_path = str(Path(db).expanduser().resolve())
+    else:
+        db_path = ctx.obj['config'].get_db_path()
+    
+    ctx.obj['db_path'] = db_path
+    ctx.obj['db_manager'] = DatabaseManager(db_path)
 
 
 @cli.command()
 @click.argument('path', type=click.Path(exists=True, path_type=Path))
-@click.option('--hash/--no-hash', default=False, 
+@click.option('--hash/--no-hash', default=None, 
               help='Calculate file hashes for duplicate detection (slower)')
-@click.option('--threads', default=8, help='Number of worker threads')
+@click.option('--threads', type=int, help='Number of worker threads')
 @click.option('--rescan', is_flag=True, 
               help='Clear existing entries and rescan from scratch')
 @click.option('--update', is_flag=True, 
@@ -37,6 +45,14 @@ def cli(ctx, db):
 def scan(ctx, path, hash, threads, rescan, update):
     """Scan directory and add photos to database"""
     db_manager = ctx.obj['db_manager']
+    config = ctx.obj['config']
+    
+    # Use config defaults if not specified
+    scanning_config = config.get_scanning_config()
+    if hash is None:
+        hash = scanning_config.get('calculate_hash', False)
+    if threads is None:
+        threads = scanning_config.get('threads', 8)
     
     if rescan:
         click.echo("Clearing existing database entries...")
@@ -67,14 +83,22 @@ def scan(ctx, path, hash, threads, rescan, update):
 @cli.command()
 @click.argument('path', type=click.Path(exists=True, path_type=Path))
 @click.option('--mode', type=click.Choice(['hash', 'metadata', 'auto']), 
-              default='auto', help='Verification mode')
-@click.option('--threads', default=8, help='Number of worker threads')
+              help='Verification mode')
+@click.option('--threads', type=int, help='Number of worker threads')
 @click.option('--report', type=click.Path(), 
               help='Save verification report to file')
 @click.pass_context
 def verify(ctx, path, mode, threads, report):
     """Verify SD card photos against database"""
     db_manager = ctx.obj['db_manager']
+    config = ctx.obj['config']
+    
+    # Use config defaults if not specified
+    verification_config = config.get_verification_config()
+    if mode is None:
+        mode = verification_config.get('mode', 'auto')
+    if threads is None:
+        threads = verification_config.get('threads', 8)
     
     # Check if database has any photos
     stats = db_manager.get_stats()

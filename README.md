@@ -19,15 +19,43 @@ A Python tool to verify that all photos from an SD card have been backed up to y
 pip install -r requirements.txt
 
 # Scan your NAS and build database
-python main.py scan /path/to/nas/photos
+python photocheck.py scan /path/to/nas/photos
 
 # Verify SD card photos
-python main.py verify /media/sdcard
+python photocheck.py verify /media/sdcard
 
 # Clean up missing files
-python main.py cleanup --mark-missing
+python photocheck.py cleanup --mark-missing
 ```
 
 ## Usage
 
-See `python main.py --help` for detailed usage instructions.
+## Configuration
+
+Copy `config.yaml.example` to `config.yaml` and customize:
+
+```yaml
+database:
+  path: "~/photocheck.db"
+scanning:
+  threads: 8
+  calculate_hash: false
+verification:
+  mode: "auto"
+  threads: 8
+```
+
+## Usage
+
+```bash
+# Use default config file (config.yaml)
+python photocheck.py scan /nas/photos
+
+# Specify custom config file  
+python photocheck.py --config /path/to/config.yaml scan /nas/photos
+
+# Override database location
+python photocheck.py --db /tmp/photos.db scan /nas/photos
+```
+
+See `python photocheck.py --help` for detailed usage instructions.
