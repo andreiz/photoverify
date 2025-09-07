@@ -1,0 +1,26 @@
+# PhotoCheck Configuration Example
+# Copy to config.yaml and customize
+
+database:
+  path: "~/photocheck.db"  # Database file location
+
+scanning:
+  threads: 8              # Number of worker threads for scanning
+  batch_size: 100         # Photos to process in each batch
+  calculate_hash: false   # Enable hash calculation by default
+
+verification:
+  mode: "auto"           # auto, hash, or metadata
+  threads: 8             # Number of worker threads for verification
+
+# NAS paths to scan (examples)
+nas_paths:
+  - "/mnt/nas/photos/2024"
+  - "/mnt/nas/photos/2023"
+  - "/Users/username/Pictures"
+
+# Common SD card mount points (examples)  
+sd_paths:
+  - "/media/sdcard"
+  - "/Volumes/SDCARD"
+  - "/mnt/sdcard"
