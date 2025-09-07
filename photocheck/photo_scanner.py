@@ -20,10 +20,11 @@ class PhotoScanner:
         '.rw2', '.pef', '.srw', '.x3f'
     }
 
-    def __init__(self, db_manager: DatabaseManager, calculate_hash: bool = False, num_threads: int = 8):
+    def __init__(self, db_manager: DatabaseManager, calculate_hash: bool = False, num_threads: int = 8, exclude_dirs: List[str] = None):
         self.db = db_manager
         self.calculate_hash = calculate_hash
         self.num_threads = num_threads
+        self.exclude_dirs = exclude_dirs or []
         self.stats = ScanStats()
 
     def scan_directory(self, directory: Path, batch_size: int = 100) -> ScanStats:
@@ -58,7 +59,10 @@ class PhotoScanner:
         return self.stats
 
     def _find_photo_files(self, directory: Path) -> Iterator[Path]:
-        for root, _, files in os.walk(directory):
+        for root, dirs, files in os.walk(directory):
+            # Remove excluded directories from dirs list to skip them
+            dirs[:] = [d for d in dirs if d not in self.exclude_dirs]
+            
             for file in files:
                 if Path(file).suffix.lower() in self.SUPPORTED_EXTENSIONS:
                     yield Path(root) / file

@@ -18,7 +18,8 @@ class Config:
             'scanning': {
                 'threads': 8,
                 'batch_size': 100,
-                'calculate_hash': False
+                'calculate_hash': False,
+                'exclude_dirs': ['.git', '.svn', '__pycache__', '.thumbnails', '@eaDir', 'thumbs']
             },
             'verification': {
                 'mode': 'auto',

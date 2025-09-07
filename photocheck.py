@@ -33,12 +33,13 @@ def cli(ctx, config, db):
 @click.option('--hash/--no-hash', default=None, 
               help='Calculate file hashes for duplicate detection (slower)')
 @click.option('--threads', type=int, help='Number of worker threads')
+@click.option('--exclude', multiple=True, help='Directory names to exclude (can be specified multiple times)')
 @click.option('--rescan', is_flag=True, 
               help='Clear existing entries and rescan from scratch')
 @click.option('--update', is_flag=True, 
               help='Update existing entries and add new files')
 @click.pass_context
-def scan(ctx, path, hash, threads, rescan, update):
+def scan(ctx, path, hash, threads, exclude, rescan, update):
     """Scan directory and add photos to database"""
     db_manager = ctx.obj['db_manager']
     config = ctx.obj['config']
@@ -50,16 +51,25 @@ def scan(ctx, path, hash, threads, rescan, update):
     if threads is None:
         threads = scanning_config.get('threads', 8)
     
+    # Combine CLI exclusions with config exclusions
+    config_excludes = scanning_config.get('exclude_dirs', [])
+    if exclude:
+        exclude_dirs = list(exclude)
+    else:
+        exclude_dirs = config_excludes
+    
     if rescan:
         click.echo("Clearing existing database entries...")
         with db_manager.get_connection() as conn:
             conn.execute('DELETE FROM photos')
     
-    scanner = PhotoScanner(db_manager, calculate_hash=hash, num_threads=threads)
+    scanner = PhotoScanner(db_manager, calculate_hash=hash, num_threads=threads, exclude_dirs=exclude_dirs)
     
     click.echo(f"Scanning directory: {path}")
     click.echo(f"Hash calculation: {'enabled' if hash else 'disabled'}")
     click.echo(f"Threads: {threads}")
+    if exclude_dirs:
+        click.echo(f"Excluding directories: {', '.join(exclude_dirs)}")
     
     if update:
         updated_count = scanner.update_existing_photos(path)

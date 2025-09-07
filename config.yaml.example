@@ -8,6 +8,13 @@ scanning:
   threads: 8              # Number of worker threads for scanning
   batch_size: 100         # Photos to process in each batch
   calculate_hash: false   # Enable hash calculation by default
+  exclude_dirs:           # Directory names to skip during scanning
+    - .git
+    - .svn
+    - __pycache__
+    - .thumbnails
+    - "@eaDir"            # Synology thumbnail cache
+    - thumbs
 
 verification:
   mode: "auto"           # auto, hash, or metadata
