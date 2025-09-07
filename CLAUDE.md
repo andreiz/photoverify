@@ -33,11 +33,14 @@ python photocheck.py --config config.yaml scan /nas/photos
 
 ## Project Structure
 - `photocheck.py` - CLI interface
-- `photo_scanner.py` - NAS scanning and metadata extraction
-- `sd_verifier.py` - SD card verification logic
-- `database.py` - SQLite database operations
-- `config.py` - Configuration management
-- `models.py` - Data models and schemas
+- `photocheck/` - Main module directory
+  - `__init__.py` - Package initialization and exports
+  - `photo_scanner.py` - NAS scanning and metadata extraction
+  - `sd_verifier.py` - SD card verification logic
+  - `database.py` - SQLite database operations
+  - `config.py` - Configuration management
+  - `models.py` - Data models and schemas
+  - `cleanup.py` - Database maintenance operations
 
 ## Key Dependencies
 - click: CLI framework

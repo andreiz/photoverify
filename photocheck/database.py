@@ -4,7 +4,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Iterator
-from models import PhotoMetadata
+from .models import PhotoMetadata
 
 
 class DatabaseManager:

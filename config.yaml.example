@@ -13,14 +13,3 @@ verification:
   mode: "auto"           # auto, hash, or metadata
   threads: 8             # Number of worker threads for verification
 
-# NAS paths to scan (examples)
-nas_paths:
-  - "/mnt/nas/photos/2024"
-  - "/mnt/nas/photos/2023"
-  - "/Users/username/Pictures"
-
-# Common SD card mount points (examples)  
-sd_paths:
-  - "/media/sdcard"
-  - "/Volumes/SDCARD"
-  - "/mnt/sdcard"

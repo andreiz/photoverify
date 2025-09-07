@@ -2,7 +2,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List
 
-from database import DatabaseManager
+from .database import DatabaseManager
 
 
 class DatabaseCleaner:

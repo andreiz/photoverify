@@ -23,9 +23,7 @@ class Config:
             'verification': {
                 'mode': 'auto',
                 'threads': 8
-            },
-            'nas_paths': [],
-            'sd_paths': []
+            }
         }
         
         if not config_path:

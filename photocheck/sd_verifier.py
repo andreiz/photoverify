@@ -6,9 +6,9 @@ from typing import List, Optional
 
 from tqdm import tqdm
 
-from database import DatabaseManager
-from models import PhotoMetadata, VerificationResult
-from photo_scanner import PhotoScanner
+from .database import DatabaseManager
+from .models import PhotoMetadata, VerificationResult
+from .photo_scanner import PhotoScanner
 
 
 class SDCardVerifier:

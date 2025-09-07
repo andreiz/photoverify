@@ -4,11 +4,7 @@ from pathlib import Path
 
 import click
 
-from cleanup import DatabaseCleaner
-from config import Config
-from database import DatabaseManager
-from photo_scanner import PhotoScanner
-from sd_verifier import SDCardVerifier
+from photocheck import DatabaseCleaner, Config, DatabaseManager, PhotoScanner, SDCardVerifier
 
 
 @click.group()

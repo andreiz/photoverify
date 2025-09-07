@@ -9,8 +9,8 @@ import exifread
 from PIL import Image
 from tqdm import tqdm
 
-from database import DatabaseManager
-from models import PhotoMetadata, ScanStats
+from .database import DatabaseManager
+from .models import PhotoMetadata, ScanStats
 
 
 class PhotoScanner:
