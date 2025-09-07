@@ -15,12 +15,13 @@ class SDCardVerifier:
     def __init__(self, db_manager: DatabaseManager, num_threads: int = 8):
         self.db = db_manager
         self.num_threads = num_threads
-        self.scanner = PhotoScanner(db_manager, calculate_hash=False, num_threads=1)
 
     def verify_sd_card(self, sd_path: Path, use_hash: bool = True) -> List[VerificationResult]:
         sd_path = Path(sd_path).resolve()
         
-        photo_files = list(self.scanner._find_photo_files(sd_path))
+        # Create scanner with appropriate hash setting
+        scanner = PhotoScanner(self.db, calculate_hash=use_hash, num_threads=1)
+        photo_files = list(scanner._find_photo_files(sd_path))
         
         if not photo_files:
             print("No photo files found on SD card")
@@ -35,7 +36,7 @@ class SDCardVerifier:
                 
                 futures = {}
                 for photo_path in photo_files:
-                    future = executor.submit(self._verify_single_photo, photo_path, use_hash)
+                    future = executor.submit(self._verify_single_photo, photo_path, use_hash, scanner)
                     futures[future] = photo_path
                 
                 for future in as_completed(futures):
@@ -56,9 +57,9 @@ class SDCardVerifier:
         
         return results
 
-    def _verify_single_photo(self, sd_photo_path: Path, use_hash: bool) -> VerificationResult:
+    def _verify_single_photo(self, sd_photo_path: Path, use_hash: bool, scanner: PhotoScanner) -> VerificationResult:
         try:
-            sd_metadata = self.scanner._extract_metadata(sd_photo_path)
+            sd_metadata = scanner._extract_metadata(sd_photo_path)
             if not sd_metadata:
                 return VerificationResult(
                     sd_photo_path=str(sd_photo_path),
