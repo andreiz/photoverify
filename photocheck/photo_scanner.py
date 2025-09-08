@@ -116,16 +116,27 @@ class PhotoScanner:
             self.dirs_processed += 1
             root_path = Path(root)
             
-            # Show current directory with parent for context
-            if root_path.parent != directory:
-                self.current_dir = f"{root_path.parent.name}/{root_path.name}"
-            else:
-                self.current_dir = root_path.name
+            # Show current directory with up to 3 levels of context
+            parts = []
+            current = root_path
+            base_path = Path(directory)
             
-            # Print status every few directories
+            # Build path components from current back to base (up to 3 levels)
+            while current != base_path and len(parts) < 3:
+                parts.append(current.name)
+                current = current.parent
+                if current == base_path:
+                    break
+            
+            # Reverse to get correct order and join
+            self.current_dir = "/".join(reversed(parts)) if parts else root_path.name
+            
+            # Print status every few directories (clear line to avoid remnants)
             if self.dirs_processed % 10 == 0 or self.dirs_processed == 1:
                 photos_so_far = getattr(self.stats, 'total_files', 0)
-                print(f"\rScanning: {self.current_dir} | {self.dirs_processed} dirs | {photos_so_far} photos found", end="", flush=True)
+                status_msg = f"\rScanning: {self.current_dir} | {self.dirs_processed} dirs | {photos_so_far} photos found"
+                # Clear line by padding with spaces then carriage return
+                print(f"{status_msg:<120}", end="\r", flush=True)
             
             for file in files:
                 if Path(file).suffix.lower() in self.SUPPORTED_EXTENSIONS:
