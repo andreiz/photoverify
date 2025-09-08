@@ -77,13 +77,21 @@ def scan(ctx, path, hash, threads, exclude, rescan, update):
     else:
         stats = scanner.scan_directory(path)
         
-        click.echo(f"\nScan completed in {stats.duration:.1f}s")
-        click.echo(f"Total files processed: {stats.processed_files}")
-        click.echo(f"Photos added to database: {stats.photos_found}")
-        click.echo(f"Errors encountered: {stats.errors}")
+        click.echo(f"\n✅ Scan completed successfully!")
+        click.echo(f"📁 Total files discovered: {stats.total_files}")
+        click.echo(f"📸 Photos processed: {stats.processed_files}")
+        click.echo(f"💾 Photos added to database: {stats.photos_found}")
+        click.echo(f"⏱️  Total time: {stats.duration:.1f}s")
+        
+        if stats.processed_files > 0:
+            rate = stats.processed_files / stats.duration if stats.duration > 0 else 0
+            click.echo(f"🚀 Processing rate: {rate:.1f} photos/sec")
+        
+        if stats.errors > 0:
+            click.echo(f"⚠️  Errors encountered: {stats.errors}")
         
         if stats.duplicates_found > 0:
-            click.echo(f"Duplicates found: {stats.duplicates_found}")
+            click.echo(f"🔄 Duplicates found: {stats.duplicates_found}")
 
 
 @cli.command()

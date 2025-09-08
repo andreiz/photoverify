@@ -1,5 +1,7 @@
 import hashlib
 import os
+import queue
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
@@ -31,32 +33,96 @@ class PhotoScanner:
         self.stats = ScanStats(start_time=datetime.now())
         directory = Path(directory).resolve()
         
-        photo_files = list(self._find_photo_files(directory))
-        self.stats.total_files = len(photo_files)
+        print(f"Discovering photos in {directory}...")
         
-        if not photo_files:
-            self.stats.end_time = datetime.now()
-            return self.stats
-
-        print(f"Found {len(photo_files)} photo files. Starting scan...")
+        # Use streaming processing with producer-consumer pattern
+        photo_queue = queue.Queue(maxsize=1000)  # Buffer for discovered photos
+        discovery_done = threading.Event()
         
+        # Start discovery thread
+        discovery_thread = threading.Thread(
+            target=self._discover_photos_thread,
+            args=(directory, photo_queue, discovery_done)
+        )
+        discovery_thread.start()
+        
+        # Process photos as they are discovered
         with ThreadPoolExecutor(max_workers=self.num_threads) as executor:
-            with tqdm(total=len(photo_files), desc="Scanning photos") as pbar:
-                batch = []
+            batch = []
+            
+            # Initial progress bar - we'll update total as we discover files
+            pbar = tqdm(desc="Processing photos", unit="photos", position=0)
+            
+            try:
+                while True:
+                    try:
+                        # Get photo path from queue (timeout to check if discovery is done)
+                        photo_path = photo_queue.get(timeout=0.1)
+                        
+                        # Submit for processing
+                        future = executor.submit(self._extract_metadata, photo_path)
+                        batch.append(future)
+                        
+                        # Process batch when full
+                        if len(batch) >= batch_size:
+                            self._process_batch(batch, pbar)
+                            batch = []
+                            
+                    except queue.Empty:
+                        # Check if discovery is complete and queue is empty
+                        if discovery_done.is_set() and photo_queue.empty():
+                            break
+                        continue
                 
-                for photo_path in photo_files:
-                    future = executor.submit(self._extract_metadata, photo_path)
-                    batch.append(future)
-                    
-                    if len(batch) >= batch_size:
-                        self._process_batch(batch, pbar)
-                        batch = []
-                
+                # Process remaining batch
                 if batch:
                     self._process_batch(batch, pbar)
-
+                    
+            finally:
+                pbar.close()
+        
+        # Wait for discovery thread to complete
+        discovery_thread.join()
+        
         self.stats.end_time = datetime.now()
         return self.stats
+
+    def _discover_photos_thread(self, directory: Path, photo_queue: queue.Queue, discovery_done: threading.Event):
+        """Discovery thread that finds photos and puts them in queue with progress indication"""
+        dirs_processed = 0
+        photos_found = 0
+        
+        # Create a separate progress bar for discovery
+        discovery_pbar = tqdm(desc="Discovering files", unit="dirs", position=1, leave=False)
+        
+        try:
+            for photo_path in self._find_photo_files_with_progress(directory, discovery_pbar):
+                photo_queue.put(photo_path)
+                photos_found += 1
+                self.stats.total_files = photos_found  # Update running total
+                dirs_processed += 1
+                
+        except Exception as e:
+            print(f"Error during discovery: {e}")
+        finally:
+            discovery_pbar.close()
+            discovery_done.set()
+            print(f"\nDiscovery complete: found {photos_found} photos in {dirs_processed} directories")
+
+    def _find_photo_files_with_progress(self, directory: Path, pbar: tqdm) -> Iterator[Path]:
+        """Find photo files with progress indication"""
+        for root, dirs, files in os.walk(directory):
+            # Remove excluded directories from dirs list to skip them
+            dirs[:] = [d for d in dirs if d not in self.exclude_dirs]
+            
+            # Update progress bar with current directory
+            current_dir = Path(root).name
+            pbar.set_description(f"Scanning: {current_dir}")
+            pbar.update(1)
+            
+            for file in files:
+                if Path(file).suffix.lower() in self.SUPPORTED_EXTENSIONS:
+                    yield Path(root) / file
 
     def _find_photo_files(self, directory: Path) -> Iterator[Path]:
         for root, dirs, files in os.walk(directory):
