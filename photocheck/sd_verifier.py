@@ -1,4 +1,5 @@
 import hashlib
+import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
@@ -16,12 +17,46 @@ class SDCardVerifier:
         self.db = db_manager
         self.num_threads = num_threads
 
+    def _detect_incomplete_metadata(self, nas_photo: PhotoMetadata, sd_photo: PhotoMetadata) -> List[str]:
+        """Detect if NAS metadata is incomplete compared to SD card metadata"""
+        warnings = []
+
+        # Check for missing critical metadata in NAS that's present on SD
+        if sd_photo.capture_datetime and not nas_photo.capture_datetime:
+            warnings.append("NAS entry missing capture date/time")
+
+        if sd_photo.width and sd_photo.height and (not nas_photo.width or not nas_photo.height):
+            warnings.append("NAS entry missing image dimensions")
+
+        if sd_photo.camera_make and not nas_photo.camera_make:
+            warnings.append("NAS entry missing camera make/model")
+
+        # Check if only basic file info is available (suggests corrupted metadata during scan)
+        nas_has_only_basic = (nas_photo.file_size and
+                              not nas_photo.capture_datetime and
+                              not nas_photo.width and
+                              not nas_photo.camera_make)
+
+        if nas_has_only_basic and (sd_photo.capture_datetime or sd_photo.width or sd_photo.camera_make):
+            warnings.append("NAS entry has incomplete metadata (possible file corruption during scan)")
+
+        return warnings
+
+    def _find_photo_files_for_verification(self, directory: Path, scanner: PhotoScanner) -> List[Path]:
+        """Find photo files for verification (simple file discovery without processing)"""
+        photo_files = []
+        for root, dirs, files in os.walk(directory):
+            for file in files:
+                if Path(file).suffix.lower() in scanner.SUPPORTED_EXTENSIONS:
+                    photo_files.append(Path(root) / file)
+        return photo_files
+
     def verify_sd_card(self, sd_path: Path, use_hash: bool = True) -> List[VerificationResult]:
         sd_path = Path(sd_path).resolve()
         
         # Create scanner with appropriate hash setting
         scanner = PhotoScanner(self.db, calculate_hash=use_hash, num_threads=1)
-        photo_files = list(scanner._find_photo_files(sd_path))
+        photo_files = self._find_photo_files_for_verification(sd_path, scanner)
         
         if not photo_files:
             print("No photo files found on SD card")
@@ -59,7 +94,7 @@ class SDCardVerifier:
 
     def _verify_single_photo(self, sd_photo_path: Path, use_hash: bool, scanner: PhotoScanner) -> VerificationResult:
         try:
-            sd_metadata = scanner._extract_metadata(sd_photo_path)
+            sd_metadata = scanner.extract_metadata_single_file(sd_photo_path)
             if not sd_metadata:
                 return VerificationResult(
                     sd_photo_path=str(sd_photo_path),
@@ -70,12 +105,14 @@ class SDCardVerifier:
             if use_hash and sd_metadata.file_hash:
                 nas_photo = self.db.find_by_hash(sd_metadata.file_hash)
                 if nas_photo:
+                    warnings = self._detect_incomplete_metadata(nas_photo, sd_metadata)
                     return VerificationResult(
                         sd_photo_path=str(sd_photo_path),
                         found_in_nas=True,
                         nas_photo_path=nas_photo.file_path,
                         match_type="hash",
-                        confidence=1.0
+                        confidence=1.0,
+                        warnings=warnings
                     )
 
             metadata_matches = self.db.find_by_metadata(
@@ -87,24 +124,33 @@ class SDCardVerifier:
             if metadata_matches:
                 best_match = self._find_best_metadata_match(sd_metadata, metadata_matches)
                 if best_match:
+                    warnings = self._detect_incomplete_metadata(best_match, sd_metadata)
                     return VerificationResult(
                         sd_photo_path=str(sd_photo_path),
                         found_in_nas=True,
                         nas_photo_path=best_match.file_path,
                         match_type="metadata",
-                        confidence=self._calculate_confidence(sd_metadata, best_match)
+                        confidence=self._calculate_confidence(sd_metadata, best_match),
+                        warnings=warnings
                     )
 
-            filename_matches = self.db.find_by_metadata(sd_metadata.filename)
-            if filename_matches:
-                best_match = self._find_best_metadata_match(sd_metadata, filename_matches)
+            # Fallback: try filename + file size (more reliable than filename alone)
+            filename_size_matches = self.db.find_by_metadata(
+                sd_metadata.filename,
+                None,  # No datetime requirement
+                sd_metadata.file_size
+            )
+            if filename_size_matches:
+                best_match = self._find_best_metadata_match(sd_metadata, filename_size_matches)
                 if best_match:
+                    warnings = self._detect_incomplete_metadata(best_match, sd_metadata)
                     return VerificationResult(
                         sd_photo_path=str(sd_photo_path),
                         found_in_nas=True,
                         nas_photo_path=best_match.file_path,
-                        match_type="filename",
-                        confidence=self._calculate_confidence(sd_metadata, best_match)
+                        match_type="filename_size",
+                        confidence=self._calculate_confidence(sd_metadata, best_match),
+                        warnings=warnings
                     )
 
             return VerificationResult(
@@ -165,19 +211,29 @@ class SDCardVerifier:
         
         return score / total_weight if total_weight > 0 else 0.0
 
-    def generate_report(self, results: List[VerificationResult]) -> str:
+    def generate_report(self, results: List[VerificationResult], sd_path: str = None) -> str:
         if not results:
             return "No verification results to report."
 
         found_count = sum(1 for r in results if r.found_in_nas)
         missing_count = len(results) - found_count
-        
+
+        # Get current timestamp
+        from datetime import datetime
+        import sys
+        verification_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        command_line = " ".join(sys.argv)
+
         report_lines = [
             f"SD Card Verification Report",
             f"=" * 40,
+            f"Verification Date: {verification_time}",
+            f"Command: {command_line}",
+            f"SD Card Path: {sd_path or 'Unknown'}",
+            "",
             f"Total photos checked: {len(results)}",
-            f"Found in NAS: {found_count}",
-            f"Missing from NAS: {missing_count}",
+            f"Found in DB: {found_count}",
+            f"Missing from DB: {missing_count}",
             f"Success rate: {(found_count/len(results)*100):.1f}%",
             ""
         ]
@@ -187,11 +243,14 @@ class SDCardVerifier:
                 "Missing Photos:",
                 "-" * 20
             ])
-            
-            for result in results:
-                if not result.found_in_nas:
-                    report_lines.append(f"  {result.sd_photo_path}")
-            
+
+            # Sort missing photos alphabetically
+            missing_photos = [result.sd_photo_path for result in results if not result.found_in_nas]
+            missing_photos.sort()
+
+            for photo_path in missing_photos:
+                report_lines.append(f"  {photo_path}")
+
             report_lines.append("")
         
         match_types = {}
@@ -204,8 +263,25 @@ class SDCardVerifier:
                 "Match Types:",
                 "-" * 20
             ])
-            
+
             for match_type, count in match_types.items():
                 report_lines.append(f"  {match_type}: {count}")
-        
+
+            report_lines.append("")
+
+        # Add warnings section
+        warning_results = [r for r in results if r.found_in_nas and r.warnings]
+        if warning_results:
+            report_lines.extend([
+                "Verification Warnings:",
+                "-" * 30
+            ])
+
+            for result in warning_results:
+                filename = Path(result.sd_photo_path).name
+                report_lines.append(f"  {filename}:")
+                for warning in result.warnings:
+                    report_lines.append(f"    • {warning}")
+                report_lines.append("")
+
         return "\n".join(report_lines)

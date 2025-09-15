@@ -30,26 +30,33 @@ def cli(ctx, config, db):
 
 @cli.command()
 @click.argument('path', type=click.Path(exists=True, path_type=Path))
-@click.option('--hash/--no-hash', default=None, 
-              help='Calculate file hashes for duplicate detection (slower)')
+@click.option('--method', type=click.Choice(['hash', 'exif']), default=None,
+              help='Processing method: "hash" for hash-only (fast), "exif" for full metadata extraction')
+@click.option('--verbose', '-v', is_flag=True, help='Enable verbose output showing detailed progress')
+@click.option('--debug', is_flag=True, help='Enable debug output including timing information')
 @click.option('--threads', type=int, help='Number of worker threads')
 @click.option('--exclude', multiple=True, help='Directory names to exclude (can be specified multiple times)')
-@click.option('--rescan', is_flag=True, 
+@click.option('--rescan', is_flag=True,
               help='Clear existing entries and rescan from scratch')
-@click.option('--update', is_flag=True, 
+@click.option('--update', is_flag=True,
               help='Update existing entries and add new files')
 @click.pass_context
-def scan(ctx, path, hash, threads, exclude, rescan, update):
+def scan(ctx, path, method, verbose, debug, threads, exclude, rescan, update):
     """Scan directory and add photos to database"""
     db_manager = ctx.obj['db_manager']
     config = ctx.obj['config']
     
     # Use config defaults if not specified
     scanning_config = config.get_scanning_config()
-    if hash is None:
-        hash = scanning_config.get('calculate_hash', False)
+    if method is None:
+        method = scanning_config.get('method', 'exif')
     if threads is None:
         threads = scanning_config.get('threads', 8)
+    
+    # Set processing flags based on method
+    calculate_hash = (method == 'hash')
+    extract_exif = (method == 'exif')
+    extract_dimensions = (method == 'exif')
     
     # Combine CLI exclusions with config exclusions
     config_excludes = scanning_config.get('exclude_dirs', [])
@@ -63,32 +70,88 @@ def scan(ctx, path, hash, threads, exclude, rescan, update):
         with db_manager.get_connection() as conn:
             conn.execute('DELETE FROM photos')
     
-    scanner = PhotoScanner(db_manager, calculate_hash=hash, num_threads=threads, exclude_dirs=exclude_dirs)
+    scanner = PhotoScanner(db_manager, calculate_hash=calculate_hash, extract_exif=extract_exif, extract_dimensions=extract_dimensions, num_threads=threads, exclude_dirs=exclude_dirs, verbose=verbose, debug=debug)
     
     click.echo(f"Scanning directory: {path}")
-    click.echo(f"Hash calculation: {'enabled' if hash else 'disabled'}")
+    click.echo(f"Processing method: {method}")
     click.echo(f"Threads: {threads}")
     if exclude_dirs:
         click.echo(f"Excluding directories: {', '.join(exclude_dirs)}")
     
     if update:
         updated_count = scanner.update_existing_photos(path)
-        click.echo(f"Updated {updated_count} existing photos")
-    else:
-        stats = scanner.scan_directory(path)
+        stats = scanner.stats
         
-        click.echo(f"\n✅ Scan completed successfully!")
-        click.echo(f"📁 Total files discovered: {stats.total_files}")
-        click.echo(f"📸 Photos processed: {stats.processed_files}")
-        click.echo(f"💾 Photos added to database: {stats.photos_found}")
+        click.echo(f"\n✅ Update completed successfully!")
+        click.echo(f"📁 Total files checked: {stats.processed_files}")
+        click.echo(f"💾 New photos added to database: {stats.photos_found}")
         click.echo(f"⏱️  Total time: {stats.duration:.1f}s")
         
         if stats.processed_files > 0:
             rate = stats.processed_files / stats.duration if stats.duration > 0 else 0
-            click.echo(f"🚀 Processing rate: {rate:.1f} photos/sec")
+            click.echo(f"🚀 Processing rate: {rate:.1f} files/sec")
         
-        if stats.errors > 0:
-            click.echo(f"⚠️  Errors encountered: {stats.errors}")
+        # Show files that failed metadata extraction
+        if hasattr(scanner, 'failed_files') and scanner.failed_files:
+            failed_count = len(scanner.failed_files)
+            if stats.processed_files > 0:
+                failure_rate = (failed_count / stats.processed_files) * 100
+                click.echo(f"\n⚠️  Files that failed metadata extraction ({failed_count}, {failure_rate:.1f}%):")
+            else:
+                click.echo(f"\n⚠️  Files that failed metadata extraction ({failed_count}):")
+            for failed_file in scanner.failed_files[:15]:  # Show first 15 failed files
+                click.echo(f"  {Path(failed_file).name}")
+            if len(scanner.failed_files) > 15:
+                click.echo(f"  ... and {len(scanner.failed_files) - 15} more")
+
+    else:
+        try:
+            stats = scanner.scan_directory(path)
+        except KeyboardInterrupt:
+            # Exit cleanly without traceback
+            ctx.exit(1)
+        
+        if getattr(stats, 'interrupted', False):
+            click.echo(f"\n❌ Scan was interrupted")
+            if stats.processed_files > 0:
+                click.echo(f"📁 Files processed before interruption: {stats.processed_files}")
+                click.echo(f"💾 Photos added to database: {stats.photos_found}")
+        else:
+            if stats.errors > 0:
+                click.echo(f"\n⚠️ Scan completed with {stats.errors} failed files")
+            else:
+                click.echo(f"\n✅ Scan completed successfully!")
+            click.echo(f"📁 Files processed: {stats.processed_files}")
+            click.echo(f"💾 Photos added to database: {stats.photos_found}")
+            if stats.errors > 0:
+                click.echo(f"❌ Failed files: {stats.errors}")
+            click.echo(f"⏱️  Total time: {stats.duration:.1f}s")
+            
+            if stats.processed_files > 0:
+                rate = stats.processed_files / stats.duration if stats.duration > 0 else 0
+                click.echo(f"🚀 Processing rate: {rate:.1f} photos/sec")
+        
+        # Show files that failed metadata extraction
+        if hasattr(scanner, 'failed_files') and scanner.failed_files:
+            failed_count = len(scanner.failed_files)
+            if stats.processed_files > 0:
+                failure_rate = (failed_count / stats.processed_files) * 100
+                click.echo(f"\n⚠️  Files that failed metadata extraction ({failed_count}, {failure_rate:.1f}%):")
+            else:
+                click.echo(f"\n⚠️  Files that failed metadata extraction ({failed_count}):")
+            for failed_file in scanner.failed_files[:15]:  # Show first 15 failed files
+                click.echo(f"  {Path(failed_file).name}")
+            if len(scanner.failed_files) > 15:
+                click.echo(f"  ... and {len(scanner.failed_files) - 15} more")
+
+        
+        # Show other errors at the end
+        if hasattr(scanner, 'errors') and scanner.errors:
+            click.echo(f"\n⚠️  Other errors encountered ({len(scanner.errors)}):")
+            for error in scanner.errors[:10]:  # Show first 10 errors
+                click.echo(f"  {error}")
+            if len(scanner.errors) > 10:
+                click.echo(f"  ... and {len(scanner.errors) - 10} more")
         
         if stats.duplicates_found > 0:
             click.echo(f"🔄 Duplicates found: {stats.duplicates_found}")
@@ -137,7 +200,7 @@ def verify(ctx, path, mode, threads, report):
         click.echo("No photos found on SD card")
         return
     
-    report_text = verifier.generate_report(results)
+    report_text = verifier.generate_report(results, str(path))
     click.echo("\n" + report_text)
     
     if report:
@@ -147,7 +210,7 @@ def verify(ctx, path, mode, threads, report):
     # Exit with error code if any photos are missing
     missing_count = sum(1 for r in results if not r.found_in_nas)
     if missing_count > 0:
-        click.echo(f"\n⚠️  {missing_count} photos not found in NAS!")
+        click.echo(f"\n⚠️  {missing_count} photos not found in DB!")
         ctx.exit(1)
     else:
         click.echo("\n✅ All photos verified!")

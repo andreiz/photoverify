@@ -57,6 +57,8 @@ class DatabaseManager:
             conn.execute('CREATE INDEX IF NOT EXISTS idx_filename ON photos(filename)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_capture_datetime ON photos(capture_datetime)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_file_exists ON photos(file_exists)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_file_path ON photos(file_path)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_filename_exists ON photos(filename, file_exists)')
 
     def insert_photo(self, photo: PhotoMetadata) -> bool:
         with self.get_connection() as conn:

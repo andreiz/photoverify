@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List
 from pathlib import Path
 
 
@@ -34,6 +34,11 @@ class VerificationResult:
     nas_photo_path: Optional[str] = None
     match_type: Optional[str] = None  # 'hash', 'metadata', 'filename'
     confidence: float = 0.0
+    warnings: List[str] = None  # Warnings about verification quality
+
+    def __post_init__(self):
+        if self.warnings is None:
+            self.warnings = []
     
     
 @dataclass 
@@ -45,6 +50,7 @@ class ScanStats:
     errors: int = 0
     start_time: Optional[datetime] = None
     end_time: Optional[datetime] = None
+    interrupted: bool = False
     
     @property
     def duration(self) -> Optional[float]:

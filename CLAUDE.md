@@ -18,8 +18,14 @@ python -m black .
 
 ### Running the Application
 ```bash
-# Scan NAS
+# Scan NAS (full scan)
 python photocheck.py scan /path/to/nas --db photos.db
+
+# Update scan (faster - marks existing as verified, adds new)
+python photocheck.py scan --update /path/to/nas --db photos.db
+
+# Exclude specific directories
+python photocheck.py scan --exclude iCloud-sync --exclude iPhone-sync /path/to/nas
 
 # Verify SD card  
 python photocheck.py verify /media/sdcard --db photos.db
@@ -44,7 +50,39 @@ python photocheck.py --config config.yaml scan /nas/photos
 
 ## Key Dependencies
 - click: CLI framework
-- Pillow: Image processing
-- exifread: EXIF metadata extraction
+- exiftool: External tool for EXIF metadata and image dimension extraction (supports all RAW formats)
 - tqdm: Progress bars
 - pyyaml: Configuration files
+
+## Supported File Formats
+PhotoCheck supports 45+ image formats including:
+
+### Standard Formats
+- JPEG (.jpg, .jpeg)
+- PNG (.png) 
+- TIFF (.tiff, .tif)
+- BMP (.bmp)
+- GIF (.gif)
+
+### RAW Formats
+- **Canon**: .cr2, .cr3, .crw
+- **Nikon**: .nef
+- **Sony**: .arw, .sr2, .srf
+- **Fujifilm**: .raf
+- **Olympus**: .orf
+- **Panasonic**: .rw2
+- **Pentax**: .pef, .ptx, .pxn
+- **Leica**: .rwl
+- **Hasselblad**: .3fr, .fff
+- **Phase One**: .iiq, .cap, .eip
+- **Adobe**: .dng
+- And many more...
+
+## Performance Features
+- **Multi-threaded processing**: 8 threads by default for fast scanning
+- **Efficient metadata extraction**: exiftool batch processing handles EXIF data and dimensions for all formats
+- **Chunked processing**: Large directories automatically split into manageable chunks
+- **Progress display**: Shows current folder being processed with running totals and timing
+- **Database optimization**: Proper indexing and batch operations
+- **Memory efficient**: Streaming processing prevents memory issues with large directories
+- **Robust verification**: Requires filename + file size minimum for reliable photo matching
