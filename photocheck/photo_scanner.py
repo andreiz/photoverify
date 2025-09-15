@@ -12,6 +12,10 @@ from typing import Iterator, List, Optional, Dict
 
 # Note: Using exiftool for metadata extraction via subprocess JSON calls
 
+from .constants import (
+    DEFAULT_CHUNK_SIZE, EXIFTOOL_TIMEOUT_FULL, EXIFTOOL_TIMEOUT_CHUNK,
+    EXIFTOOL_TIMEOUT_SINGLE, SPINNER_CHARS, SPINNER_DELAY
+)
 from .database import DatabaseManager
 from .models import PhotoMetadata, ScanStats
 
@@ -68,20 +72,38 @@ class PhotoScanner:
         '.bay'
     }
 
-    def __init__(self, db_manager: DatabaseManager, calculate_hash: bool = False, extract_exif: bool = True, extract_dimensions: bool = True, num_threads: int = 8, exclude_dirs: List[str] = None, verbose: bool = False, debug: bool = False):
+    def __init__(self, db_manager: DatabaseManager, calculate_hash: bool = False, extract_metadata: bool = True, exclude_dirs: List[str] = None, verbose: bool = False, debug: bool = False):
         self.db = db_manager
         self.calculate_hash = calculate_hash
-        self.extract_exif = extract_exif
-        self.extract_dimensions = extract_dimensions
-        self.num_threads = num_threads
+        self.extract_metadata = extract_metadata  # Simplified: combines exif and dimensions
         self.exclude_dirs = exclude_dirs or []
         self.verbose = verbose
         self.debug = debug
         self.stats = ScanStats()
         self.errors = []  # Collect errors to show at end
         self.failed_files = []  # Files that failed metadata extraction
-        self.progress_counter = 0  # Unified progress counter
-        self.print_lock = threading.Lock()  # Thread-safe printing
+
+    def _get_exiftool_extensions(self) -> List[str]:
+        """Generate exiftool -ext parameters from SUPPORTED_EXTENSIONS"""
+        ext_params = []
+        for ext in sorted(self.SUPPORTED_EXTENSIONS):
+            # Remove the dot and convert to uppercase for exiftool
+            ext_params.extend(["-ext", ext[1:].upper()])
+        return ext_params
+
+    def _should_skip_file(self, file_path: Path) -> bool:
+        """Check if a file should be skipped (system files, etc.)"""
+        filename = file_path.name
+
+        # Skip AppleDouble files (macOS metadata files)
+        if filename.startswith('._'):
+            return True
+
+        # Skip other common system files
+        if filename in {'.DS_Store', 'Thumbs.db', 'desktop.ini'}:
+            return True
+
+        return False
 
     def scan_directory(self, directory: Path, batch_size: int = 100) -> ScanStats:
         """Scan directory and add new photos to database"""
@@ -102,71 +124,12 @@ class PhotoScanner:
         else:  # update mode
             print(f"Updating existing photos in {directory}...")
         
-        # Initialize batch metadata storage
-        self._batch_metadata = []
-
         try:
-            # Walk the directory tree - processing is now handled in _find_photo_files_simple
+            # Walk the directory tree and process each directory immediately
             file_count = 0
-            for photo_path in self._find_photo_files_simple(directory):
+            for photo_path in self._find_photo_files_simple(directory, mode):
                 file_count += 1
-                # Note: Both scan and update modes are now handled by _find_photo_files_simple
-                # which calls _process_directory_with_exiftool and populates _batch_metadata
-
-            # Handle database operations based on mode
-            if hasattr(self, '_batch_metadata') and self._batch_metadata:
-                if mode == 'scan':
-                    # Scan mode: insert all metadata
-                    if self.verbose:
-                        print(f"💾 Inserting {len(self._batch_metadata)} photos into database...")
-                    self.db.insert_photos_batch(self._batch_metadata)
-                    self.stats.photos_found = len(self._batch_metadata)
-                    if self.verbose:
-                        print(f"✅ Database updated with {len(self._batch_metadata)} new photos")
-                else:  # update mode
-                    # Update mode: separate new from existing files
-                    new_photos = []
-                    existing_count = 0
-
-                    for metadata in self._batch_metadata:
-                        # Check if this photo already exists in database (by filename and file_size)
-                        existing = self.db.find_by_metadata(
-                            metadata.filename,
-                            None,  # Don't match on datetime (format issues)
-                            metadata.file_size
-                        )
-                        if self.debug:
-                            print(f"Debug: Checking {metadata.filename} (size: {metadata.file_size}), found {len(existing)} existing records")
-                            if not existing:
-                                # Show what IS in the database for this filename
-                                all_with_name = self.db.find_by_metadata(metadata.filename, None, None)
-                                print(f"Debug: Files with same name in DB: {[(f.filename, f.file_size) for f in all_with_name]}")
-
-                        if existing:  # existing is a list, check if not empty
-                            # Mark existing file as verified
-                            self.db.mark_file_exists(metadata.file_path)
-                            existing_count += 1
-                            if self.debug:
-                                print(f"Debug: Marked {metadata.filename} as existing")
-                        else:
-                            # This is a new photo
-                            new_photos.append(metadata)
-                            if self.debug:
-                                print(f"Debug: Added {metadata.filename} as new photo")
-
-                    # Insert only new photos
-                    if new_photos:
-                        if self.verbose:
-                            print(f"💾 Inserting {len(new_photos)} new photos into database...")
-                        self.db.insert_photos_batch(new_photos)
-                        if self.verbose:
-                            print(f"✅ Database updated with {len(new_photos)} new photos")
-
-                    self.stats.photos_found = len(new_photos)
-                    if self.verbose and existing_count > 0:
-                        print(f"✅ Verified {existing_count} existing photos")
-
-                # Stats are already updated during processing - don't overwrite
+                # Processing is now handled immediately in _find_photo_files_simple
 
         except KeyboardInterrupt:
             operation = "Scan" if mode == 'scan' else "Update"
@@ -181,7 +144,7 @@ class PhotoScanner:
         return self.stats
 
 
-    def _find_photo_files_simple(self, directory: Path) -> Iterator[Path]:
+    def _find_photo_files_simple(self, directory: Path, mode: str = 'scan') -> Iterator[Path]:
         """Find photo files by walking directory tree and process each directory with exiftool"""
         for root, dirs, files in os.walk(directory):
             # Remove excluded directories from dirs list AND sort alphabetically
@@ -190,78 +153,92 @@ class PhotoScanner:
             # Check if this directory has any photo files
             photo_files = []
             for file in files:
-                if Path(file).suffix.lower() in self.SUPPORTED_EXTENSIONS:
-                    photo_files.append(Path(root) / file)
+                file_path = Path(root) / file
+                if (Path(file).suffix.lower() in self.SUPPORTED_EXTENSIONS and
+                    not self._should_skip_file(file_path)):
+                    photo_files.append(file_path)
 
-            # If we found photos in this directory, process them with exiftool
+            # If we found photos in this directory, process them with exiftool and handle immediately
             if photo_files:
-                metadata_list = self._process_directory_with_exiftool(Path(root), photo_files)
+                metadata_list, processing_time = self._process_directory_with_exiftool(Path(root), photo_files, mode)
+                # Process metadata immediately instead of batching
+                new_count, existing_count, failed_count = self._process_metadata_immediately(metadata_list, mode)
+
+                # Show the summary in the new format for all modes
+                if new_count > 0 or existing_count > 0 or failed_count > 0:
+                    total_processed = new_count + existing_count + failed_count
+                    rate = total_processed / processing_time if processing_time > 0 else 0
+
+                    # Build summary parts
+                    parts = []
+                    if existing_count > 0:
+                        parts.append(f"{existing_count} existing")
+                    if new_count > 0:
+                        parts.append(f"{new_count} new")
+                    if failed_count > 0:
+                        parts.append(f"{failed_count} failed")
+
+                    summary = ", ".join(parts)
+                    print(f"└─ {summary} [{processing_time:.1f}s, {rate:.1f} files/sec]")
+
                 for metadata in metadata_list:
                     if metadata:  # Only yield successful metadata extractions
                         yield Path(metadata.file_path)
 
+    def _process_metadata_immediately(self, metadata_list: List[Optional[PhotoMetadata]], mode: str) -> tuple:
+        """Process metadata immediately instead of batching to save memory
+        Returns (new_count, existing_count, failed_count) for update mode, (added_count, 0, failed_count) for scan mode"""
+        successful_metadata = [m for m in metadata_list if m]
+        failed_count = len(metadata_list) - len(successful_metadata)
+
+        if not successful_metadata:
+            return (0, 0, failed_count)
+
+        if mode == 'scan':
+            # Scan mode: insert all metadata immediately
+            self.db.insert_photos_batch(successful_metadata)
+            self.stats.photos_found += len(successful_metadata)
+            return (len(successful_metadata), 0, failed_count)
+        else:  # update mode
+            # Update mode: separate new from existing files and process immediately
+            new_photos = []
+            existing_count = 0
+
+            for metadata in successful_metadata:
+                # Check if this photo already exists in database (by filename and file_size)
+                existing = self.db.find_by_metadata(
+                    metadata.filename,
+                    None,  # Don't match on datetime (format issues)
+                    metadata.file_size
+                )
+                if self.debug:
+                    print(f"Debug: Checking {metadata.filename} (size: {metadata.file_size}), found {len(existing)} existing records")
+                    if not existing:
+                        # Show what IS in the database for this filename
+                        all_with_name = self.db.find_by_metadata(metadata.filename, None, None)
+                        print(f"Debug: Files with same name in DB: {[(f.filename, f.file_size) for f in all_with_name]}")
+
+                if existing:  # existing is a list, check if not empty
+                    # Mark existing file as verified
+                    self.db.mark_file_exists(metadata.file_path)
+                    existing_count += 1
+                    if self.debug:
+                        print(f"Debug: Marked {metadata.filename} as existing")
+                else:
+                    # This is a new photo
+                    new_photos.append(metadata)
+                    if self.debug:
+                        print(f"Debug: Added {metadata.filename} as new photo")
+
+            # Insert new photos immediately
+            if new_photos:
+                self.db.insert_photos_batch(new_photos)
+                self.stats.photos_found += len(new_photos)
+
+            return (len(new_photos), existing_count, failed_count)
 
 
-    def _process_update_file_simple(self, photo_path: Path):
-        """Process a single file for update mode (simplified)"""
-        try:
-            if photo_path.exists():
-                # Mark file as existing
-                self.db.mark_file_exists(str(photo_path))
 
-                # Check if this is a new photo (not in database)
-                existing = self.db.find_by_metadata(photo_path.name)
-                if not existing:
-                    # This is a new photo - it would have been processed by exiftool batch
-                    # and added to _batch_metadata, so just update stats
-                    self.stats.photos_found += 1
-
-                self.stats.processed_files += 1
-
-        except Exception as e:
-            self.errors.append(f"Error updating {photo_path}: {e}")
-
-
-
-    def _format_elapsed_time(self, seconds: float) -> str:
-        """Format elapsed time with consistent padding"""
-        total_seconds = int(seconds)
-        minutes = total_seconds // 60
-        secs = total_seconds % 60
-        
-        if minutes > 0:
-            return f"{minutes}m {secs:2d}s"
-        else:
-            return f"   {secs:2d}s"
-
-    def _print_progress_status(self, directory: Optional[str] = None, operation: str = "Processing", count: Optional[int] = None):
-        """Unified progress display for both scan and update operations"""
-        elapsed = (datetime.now() - self.stats.start_time).total_seconds()
-        time_str = self._format_elapsed_time(elapsed)
-        
-        # Use provided directory or fall back to current_dir or default
-        if directory:
-            # Show just the last directory name for cleaner display
-            dir_path = Path(directory)
-            current_dir = dir_path.name if dir_path.name else "photos"
-        else:
-            current_dir = getattr(self, 'current_dir', 'photos')
-        
-        # Use provided count or fall back to photos_found (successful DB insertions)
-        display_count = count if count is not None else self.stats.photos_found
-        
-        # Pad photo count to 5 digits and align the opening parenthesis
-        count_str = f"{display_count:5d}"
-        folder_part = f"{operation} {current_dir}"
-        
-        # Use consistent padding to align "(" at column 60
-        padding = max(1, 60 - len(folder_part))
-        status_line = f"{folder_part}{' ' * padding}({count_str} photos, {time_str})"
-        print(status_line)
-
-    def _print_processing_status(self, directory: Optional[str] = None):
-        """Backward compatibility wrapper for processing status"""
-        self._print_progress_status(directory, "Processing")
 
     def _extract_metadata(self, photo_path: Path) -> Optional[PhotoMetadata]:
         """Extract metadata from single photo file (fallback for non-batch processing)"""
@@ -300,7 +277,7 @@ class PhotoScanner:
                 hash_sha256.update(chunk)
         return hash_sha256.hexdigest()
 
-    def _process_directory_with_exiftool(self, directory: Path, photo_files: List[Path], chunk_size: int = 500) -> List[Optional[PhotoMetadata]]:
+    def _process_directory_with_exiftool(self, directory: Path, photo_files: List[Path], mode: str = 'scan', chunk_size: int = DEFAULT_CHUNK_SIZE) -> tuple[List[Optional[PhotoMetadata]], float]:
         """Process all photos in a directory using exiftool batch JSON processing"""
         # Show directory name with up to 2 parent directories for context
         dir_parts = directory.parts
@@ -315,10 +292,9 @@ class PhotoScanner:
 
         # For large directories, process in chunks to avoid timeouts
         if file_count > chunk_size:
-            return self._process_directory_chunked(directory, photo_files, chunk_size)
+            return self._process_directory_chunked(directory, photo_files, mode, chunk_size)
 
-        # Unicode spinner characters
-        spinner_chars = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+        # Unicode spinner characters from constants
 
         # Start spinner in separate thread
         spinner_active = threading.Event()
@@ -327,8 +303,8 @@ class PhotoScanner:
         def show_spinner():
             i = 0
             while spinner_active.is_set():
-                print(f"\rProcessing {file_count} files in {dir_display}... {spinner_chars[i % len(spinner_chars)]}", end="", flush=True)
-                time.sleep(0.1)
+                print(f"\rProcessing {file_count} files in {dir_display}... {SPINNER_CHARS[i % len(SPINNER_CHARS)]}", end="", flush=True)
+                time.sleep(SPINNER_DELAY)
                 i += 1
 
         spinner_thread = threading.Thread(target=show_spinner, daemon=True)
@@ -340,17 +316,15 @@ class PhotoScanner:
             cmd = [
                 "exiftool", "-json",
                 "-DateTimeOriginal", "-ImageWidth", "-ImageHeight",
-                "-Make", "-Model", "-FileSize",
-                "-ext", "RAF", "-ext", "JPG", "-ext", "JPEG",
-                "-ext", "PNG", "-ext", "TIFF", "-ext", "TIF",
-                "-ext", "CR2", "-ext", "CR3", "-ext", "NEF", "-ext", "ARW",
-                "-ext", "DNG",
-                str(directory)
+                "-Make", "-Model", "-FileSize"
             ]
+            # Add dynamic extension parameters
+            cmd.extend(self._get_exiftool_extensions())
+            cmd.append(str(directory))
 
             # Execute exiftool and capture JSON output
             exec_start = time.time()
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=EXIFTOOL_TIMEOUT_FULL)
             exec_end = time.time()
 
             # For exiftool, return code 1 often means "completed with warnings", not total failure
@@ -361,7 +335,7 @@ class PhotoScanner:
                 spinner_thread.join()
                 error_msg = result.stderr.strip() if result.stderr else f"return code {result.returncode}"
                 print(f"\rProcessing {file_count} files in {dir_display}... (error: {error_msg})")
-                return [None] * len(photo_files)
+                return [None] * len(photo_files), 0.0
 
             # Parse JSON output
             parse_start = time.time()
@@ -371,7 +345,7 @@ class PhotoScanner:
                 spinner_active.clear()
                 spinner_thread.join()
                 print(f"\rProcessing {file_count} files in {dir_display}... (error: invalid JSON)")
-                return [None] * len(photo_files)
+                return [None] * len(photo_files), 0.0
             parse_end = time.time()
 
             # Convert exiftool data to PhotoMetadata objects
@@ -404,40 +378,41 @@ class PhotoScanner:
             spinner_active.clear()
             spinner_thread.join()
 
-            # Calculate timing breakdown (only show if debug enabled)
+            # Calculate timing and rate information
+            total_time = convert_end - cmd_start
+            rate = file_count / total_time if total_time > 0 else 0
+
+            # Always show timing info for performance monitoring
+            timing_info = f" [{total_time:.1f}s, {rate:.1f} files/sec]"
+
+            # Detailed timing breakdown only in debug mode
             if self.debug:
-                total_time = convert_end - cmd_start
                 exec_time = exec_end - exec_start
                 parse_time = parse_end - parse_start
                 convert_time = convert_end - convert_start
-                timing_details = f" (exec: {exec_time:.1f}s, parse: {parse_time:.1f}s, convert: {convert_time:.1f}s, total: {total_time:.1f}s)"
-            else:
-                timing_details = ""
+                timing_info += f" (exec: {exec_time:.1f}s, parse: {parse_time:.1f}s, convert: {convert_time:.1f}s)"
 
-            if failed > 0:
-                print(f"\rProcessing {file_count} files in {dir_display}... ({successful} successful, {failed} failed){timing_details}")
-            else:
-                print(f"\rProcessing {file_count} files in {dir_display}... ({successful} successful, {failed} failed){timing_details}")
+            # Clear the progress line and show final result only
+            print(f"\rProcessing {file_count} files in {dir_display}")
 
             # Update stats
             self.stats.errors += failed
             self.stats.processed_files += successful + failed
 
-            # Store metadata for batch database insertion
-            self._batch_metadata = getattr(self, '_batch_metadata', []) + [m for m in result_list if m]
+            # Metadata is now processed immediately in _find_photo_files_simple
 
-            return result_list
+            return result_list, total_time
 
         except subprocess.TimeoutExpired:
             spinner_active.clear()
             spinner_thread.join()
             print(f"\rProcessing {file_count} files in {dir_display}... (error: timeout)")
-            return [None] * len(photo_files)
+            return [None] * len(photo_files), 0.0
         except Exception as e:
             spinner_active.clear()
             spinner_thread.join()
             print(f"\rProcessing {file_count} files in {dir_display}... (error: {e})")
-            return [None] * len(photo_files)
+            return [None] * len(photo_files), 0.0
 
     def _convert_exiftool_to_metadata(self, file_path: Path, exif_item: dict) -> Optional[PhotoMetadata]:
         """Convert exiftool JSON item to PhotoMetadata object"""
@@ -483,74 +458,8 @@ class PhotoScanner:
             return None
 
 
-    def _process_update_file(self, photo_path: Path) -> dict:
-        """Process a single file for update mode"""
-        result = {
-            'updated': 0,
-            'new_photo': None,
-            'file_path': str(photo_path),
-            'directory': str(photo_path.parent)
-        }
-        
-        try:
-            if photo_path.exists():
-                result['updated'] = 1
-                
-                # Check if this is a new photo (not in database)
-                existing = self.db.find_by_metadata(photo_path.name)
-                if not existing:
-                    metadata = self._extract_metadata(photo_path)
-                    if metadata:
-                        result['new_photo'] = metadata
-                
-        except Exception as e:
-            self.errors.append(f"Error updating {photo_path}: {e}")
-            
-        return result
 
-    def _process_update_batch(self, futures: List):
-        """Process batch of update results with progress tracking and batch DB operations"""
-        files_to_mark = []  # For batch marking files as existing
-        photos_to_insert = []  # For batch inserting new photos
-        last_directory = None
-        
-        for future in as_completed(futures):
-            try:
-                result = future.result()
-                if result['updated']:
-                    files_to_mark.append(result['file_path'])
-                    last_directory = result['directory']
-                    
-                    if result['new_photo']:
-                        photos_to_insert.append(result['new_photo'])
-                    
-                    # Update stats in thread-safe manner
-                    with self.print_lock:
-                        if result['new_photo']:
-                            self.stats.photos_found += 1
-                        self.stats.processed_files += 1
-                        
-            except Exception as e:
-                self.errors.append(f"Error processing update batch: {e}")
-        
-        # Batch database operations
-        if files_to_mark:
-            self._batch_mark_files_exist(files_to_mark)
-            
-        if photos_to_insert:
-            self.db.insert_photos_batch(photos_to_insert)
-            
-        # Progress is now printed per folder in _find_photo_files_simple
-
-    def _batch_mark_files_exist(self, file_paths: List[str]):
-        """Batch mark multiple files as existing"""
-        with self.db.get_connection() as conn:
-            conn.executemany('''
-                UPDATE photos SET file_exists = 1, last_verified = CURRENT_TIMESTAMP
-                WHERE file_path = ?
-            ''', [(path,) for path in file_paths])
-
-    def _process_directory_chunked(self, directory: Path, photo_files: List[Path], chunk_size: int) -> List[Optional[PhotoMetadata]]:
+    def _process_directory_chunked(self, directory: Path, photo_files: List[Path], mode: str, chunk_size: int) -> tuple[List[Optional[PhotoMetadata]], float]:
         """Process large directory in chunks to avoid timeouts"""
         # Show directory name with up to 2 parent directories for context
         dir_parts = directory.parts
@@ -563,7 +472,8 @@ class PhotoScanner:
 
         file_count = len(photo_files)
 
-        print(f"Processing {file_count} files in {dir_display} (in chunks of {chunk_size})...")
+        print(f"Processing {file_count} files in {dir_display}")
+        overall_start = time.time()
 
         all_results = []
         total_successful = 0
@@ -576,6 +486,7 @@ class PhotoScanner:
             total_chunks = (file_count + chunk_size - 1) // chunk_size
 
             print(f"  Chunk {chunk_num}/{total_chunks}: processing {len(chunk)} files...", end=" ", flush=True)
+            chunk_start = time.time()
 
             try:
                 # Create temporary directory with only the files in this chunk
@@ -592,26 +503,36 @@ class PhotoScanner:
                     chunk_results = self._process_single_chunk(temp_path, chunk)
                     all_results.extend(chunk_results)
 
-                    # Count results
+                    # Count results and timing
                     chunk_successful = sum(1 for r in chunk_results if r is not None)
                     chunk_failed = len(chunk_results) - chunk_successful
                     total_successful += chunk_successful
                     total_failed += chunk_failed
 
-                    print(f"({chunk_successful} successful, {chunk_failed} failed)")
+                    chunk_time = time.time() - chunk_start
+                    chunk_rate = len(chunk) / chunk_time if chunk_time > 0 else 0
+
+                    # Use visual indicators instead of text
+                    if chunk_failed == 0:
+                        status_indicator = "✅"
+                    else:
+                        status_indicator = "🟡"
+
+                    print(f"{status_indicator} [{chunk_time:.1f}s, {chunk_rate:.1f} files/sec]")
 
             except Exception as e:
                 print(f"(error: {e})")
                 all_results.extend([None] * len(chunk))
                 total_failed += len(chunk)
 
-        print(f"Completed {dir_display}: {total_successful} successful, {total_failed} failed")
+        overall_time = time.time() - overall_start
+        overall_rate = file_count / overall_time if overall_time > 0 else 0
 
         # Update stats with failed count and processed files
         self.stats.errors += total_failed
         self.stats.processed_files += total_successful + total_failed
 
-        return all_results
+        return all_results, overall_time
 
     def _process_single_chunk(self, temp_directory: Path, original_files: List[Path]) -> List[Optional[PhotoMetadata]]:
         """Process a single chunk of files"""
@@ -620,16 +541,14 @@ class PhotoScanner:
             cmd = [
                 "exiftool", "-json",
                 "-DateTimeOriginal", "-ImageWidth", "-ImageHeight",
-                "-Make", "-Model", "-FileSize",
-                "-ext", "RAF", "-ext", "JPG", "-ext", "JPEG",
-                "-ext", "PNG", "-ext", "TIFF", "-ext", "TIF",
-                "-ext", "CR2", "-ext", "CR3", "-ext", "NEF", "-ext", "ARW",
-                "-ext", "DNG",
-                str(temp_directory)
+                "-Make", "-Model", "-FileSize"
             ]
+            # Add dynamic extension parameters
+            cmd.extend(self._get_exiftool_extensions())
+            cmd.append(str(temp_directory))
 
             # Execute exiftool
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=EXIFTOOL_TIMEOUT_CHUNK)
 
             # For exiftool, return code 1 often means "completed with warnings", not total failure
             if result.returncode > 1 or not result.stdout.strip():
@@ -678,9 +597,7 @@ class PhotoScanner:
                     self.failed_files.append(str(original_file))
                     result_list.append(None)
 
-            # Store metadata for batch database insertion
-            successful_metadata = [m for m in result_list if m]
-            self._batch_metadata = getattr(self, '_batch_metadata', []) + successful_metadata
+            # Metadata is now processed immediately in _find_photo_files_simple
 
             return result_list
 
@@ -698,7 +615,7 @@ class PhotoScanner:
                 str(file_path)
             ]
 
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=EXIFTOOL_TIMEOUT_SINGLE)
 
             # For exiftool, return code 1 often means "completed with warnings"
             if result.returncode > 1 or not result.stdout.strip():
