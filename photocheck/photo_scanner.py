@@ -211,6 +211,7 @@ class PhotoScanner:
                     None,  # Don't match on datetime (format issues)
                     metadata.file_size
                 )
+
                 if self.debug:
                     print(f"Debug: Checking {metadata.filename} (size: {metadata.file_size}), found {len(existing)} existing records")
                     if not existing:

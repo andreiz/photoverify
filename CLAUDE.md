@@ -85,4 +85,32 @@ PhotoCheck supports 45+ image formats including:
 - **Progress display**: Shows current folder being processed with running totals and timing
 - **Database optimization**: Proper indexing and batch operations
 - **Memory efficient**: Streaming processing prevents memory issues with large directories
-- **Robust verification**: Requires filename + file size minimum for reliable photo matching
+- **Clean display format**: Visual chunk indicators (✅/🟡) and tree-style summary output
+
+## Verification Features
+- **Four-tier matching strategy**: Hash → Full metadata → Filename+size → Fuzzy pattern
+- **Fuzzy pattern matching**: Handles renamed files (e.g., `DSCF3801.RAF` → `AZ_20190715_095220_3801.RAF`)
+- **Detailed failure analysis**: Shows exactly what matching criteria failed and why
+- **Enhanced reporting**: Summary → Missing files → Successful matches with full paths
+- **Intelligent file detection**: Automatically skips AppleDouble system files (._filename)
+
+## Current Matching Criteria (may need updating)
+Verification uses these criteria in sequence until a match is found:
+
+1. **Hash Match**: Exact file hash (if available)
+2. **Full Metadata Match**: filename + capture_datetime + file_size (all must match exactly)
+3. **Filename + Size Match**: filename + file_size (ignores datetime)
+4. **Fuzzy Pattern Match**: Renamed file detection using:
+   - Pattern: `PREFIX_YYYYMMDD_HHMMSS_NNNN.EXT` or `PREFIX_YYYYMMDD_NNNNN.EXT`
+   - Requires: capture_datetime + file_size + extracted number from filename
+   - Example: `DSCF3801.JPG` → `AZ_20190715_095220_3801.JPG`
+
+**Note**: All methods currently require exact file_size matching, which may cause issues with recompressed JPEGs that have slight size differences but are the same photo.
+
+## Update Mode Features
+- **New vs existing tracking**: Shows count of new files added vs existing files verified
+- **Streaming processing**: Processes directories immediately without batching
+- **Progress indication**: Real-time file processing with timing per directory/chunk
+
+Don't scan SD cards.
+You don't need to comment on commit messages and remaining files.

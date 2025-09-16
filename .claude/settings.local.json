@@ -2,7 +2,14 @@
   "permissions": {
     "allow": [
       "Bash(git add:*)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(python:*)",
+      "Read(//Volumes/photos/Pre-Leica SD dump/DCIM/104_FUJI/**)",
+      "Bash(exiftool:*)",
+      "WebSearch",
+      "Read(//private/tmp/test_photos/**)",
+      "Bash(echo \"Return code: $?\")",
+      "Bash(sqlite3:*)"
     ],
     "deny": [],
     "ask": []

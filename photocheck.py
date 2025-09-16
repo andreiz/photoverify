@@ -5,6 +5,39 @@ from pathlib import Path
 import click
 
 from photocheck import DatabaseCleaner, Config, DatabaseManager, PhotoScanner, SDCardVerifier
+from photocheck.constants import MAX_FAILED_FILES_DISPLAY, MAX_ERRORS_DISPLAY
+
+
+def _show_failed_files(scanner, stats):
+    """Show files that failed metadata extraction"""
+    if hasattr(scanner, 'failed_files') and scanner.failed_files:
+        failed_count = len(scanner.failed_files)
+        if stats.processed_files > 0:
+            failure_rate = (failed_count / stats.processed_files) * 100
+            click.echo(f"\n⚠️  Files that failed metadata extraction ({failed_count}, {failure_rate:.1f}%):")
+        else:
+            click.echo(f"\n⚠️  Files that failed metadata extraction ({failed_count}):")
+        for failed_file in scanner.failed_files[:MAX_FAILED_FILES_DISPLAY]:
+            click.echo(f"  {Path(failed_file).name}")
+        if len(scanner.failed_files) > MAX_FAILED_FILES_DISPLAY:
+            click.echo(f"  ... and {len(scanner.failed_files) - MAX_FAILED_FILES_DISPLAY} more")
+
+
+def _show_processing_rate(stats):
+    """Show processing rate if applicable"""
+    if stats.processed_files > 0:
+        rate = stats.processed_files / stats.duration if stats.duration > 0 else 0
+        click.echo(f"🚀 Processing rate: {rate:.1f} files/sec")
+
+
+def _show_other_errors(scanner):
+    """Show other errors encountered during processing"""
+    if hasattr(scanner, 'errors') and scanner.errors:
+        click.echo(f"\n⚠️  Other errors encountered ({len(scanner.errors)}):")
+        for error in scanner.errors[:MAX_ERRORS_DISPLAY]:
+            click.echo(f"  {error}")
+        if len(scanner.errors) > MAX_ERRORS_DISPLAY:
+            click.echo(f"  ... and {len(scanner.errors) - MAX_ERRORS_DISPLAY} more")
 
 
 @click.group()
@@ -34,14 +67,13 @@ def cli(ctx, config, db):
               help='Processing method: "hash" for hash-only (fast), "exif" for full metadata extraction')
 @click.option('--verbose', '-v', is_flag=True, help='Enable verbose output showing detailed progress')
 @click.option('--debug', is_flag=True, help='Enable debug output including timing information')
-@click.option('--threads', type=int, help='Number of worker threads')
 @click.option('--exclude', multiple=True, help='Directory names to exclude (can be specified multiple times)')
 @click.option('--rescan', is_flag=True,
               help='Clear existing entries and rescan from scratch')
 @click.option('--update', is_flag=True,
               help='Update existing entries and add new files')
 @click.pass_context
-def scan(ctx, path, method, verbose, debug, threads, exclude, rescan, update):
+def scan(ctx, path, method, verbose, debug, exclude, rescan, update):
     """Scan directory and add photos to database"""
     db_manager = ctx.obj['db_manager']
     config = ctx.obj['config']
@@ -50,31 +82,26 @@ def scan(ctx, path, method, verbose, debug, threads, exclude, rescan, update):
     scanning_config = config.get_scanning_config()
     if method is None:
         method = scanning_config.get('method', 'exif')
-    if threads is None:
-        threads = scanning_config.get('threads', 8)
-    
     # Set processing flags based on method
     calculate_hash = (method == 'hash')
-    extract_exif = (method == 'exif')
-    extract_dimensions = (method == 'exif')
-    
+    extract_metadata = (method == 'exif')
+
     # Combine CLI exclusions with config exclusions
     config_excludes = scanning_config.get('exclude_dirs', [])
     if exclude:
         exclude_dirs = list(exclude)
     else:
         exclude_dirs = config_excludes
-    
+
     if rescan:
         click.echo("Clearing existing database entries...")
         with db_manager.get_connection() as conn:
             conn.execute('DELETE FROM photos')
-    
-    scanner = PhotoScanner(db_manager, calculate_hash=calculate_hash, extract_exif=extract_exif, extract_dimensions=extract_dimensions, num_threads=threads, exclude_dirs=exclude_dirs, verbose=verbose, debug=debug)
-    
+
+    scanner = PhotoScanner(db_manager, calculate_hash=calculate_hash, extract_metadata=extract_metadata, exclude_dirs=exclude_dirs, verbose=verbose, debug=debug)
+
     click.echo(f"Scanning directory: {path}")
     click.echo(f"Processing method: {method}")
-    click.echo(f"Threads: {threads}")
     if exclude_dirs:
         click.echo(f"Excluding directories: {', '.join(exclude_dirs)}")
     
@@ -87,22 +114,8 @@ def scan(ctx, path, method, verbose, debug, threads, exclude, rescan, update):
         click.echo(f"💾 New photos added to database: {stats.photos_found}")
         click.echo(f"⏱️  Total time: {stats.duration:.1f}s")
         
-        if stats.processed_files > 0:
-            rate = stats.processed_files / stats.duration if stats.duration > 0 else 0
-            click.echo(f"🚀 Processing rate: {rate:.1f} files/sec")
-        
-        # Show files that failed metadata extraction
-        if hasattr(scanner, 'failed_files') and scanner.failed_files:
-            failed_count = len(scanner.failed_files)
-            if stats.processed_files > 0:
-                failure_rate = (failed_count / stats.processed_files) * 100
-                click.echo(f"\n⚠️  Files that failed metadata extraction ({failed_count}, {failure_rate:.1f}%):")
-            else:
-                click.echo(f"\n⚠️  Files that failed metadata extraction ({failed_count}):")
-            for failed_file in scanner.failed_files[:15]:  # Show first 15 failed files
-                click.echo(f"  {Path(failed_file).name}")
-            if len(scanner.failed_files) > 15:
-                click.echo(f"  ... and {len(scanner.failed_files) - 15} more")
+        _show_processing_rate(stats)
+        _show_failed_files(scanner, stats)
 
     else:
         try:
@@ -127,31 +140,10 @@ def scan(ctx, path, method, verbose, debug, threads, exclude, rescan, update):
                 click.echo(f"❌ Failed files: {stats.errors}")
             click.echo(f"⏱️  Total time: {stats.duration:.1f}s")
             
-            if stats.processed_files > 0:
-                rate = stats.processed_files / stats.duration if stats.duration > 0 else 0
-                click.echo(f"🚀 Processing rate: {rate:.1f} photos/sec")
-        
-        # Show files that failed metadata extraction
-        if hasattr(scanner, 'failed_files') and scanner.failed_files:
-            failed_count = len(scanner.failed_files)
-            if stats.processed_files > 0:
-                failure_rate = (failed_count / stats.processed_files) * 100
-                click.echo(f"\n⚠️  Files that failed metadata extraction ({failed_count}, {failure_rate:.1f}%):")
-            else:
-                click.echo(f"\n⚠️  Files that failed metadata extraction ({failed_count}):")
-            for failed_file in scanner.failed_files[:15]:  # Show first 15 failed files
-                click.echo(f"  {Path(failed_file).name}")
-            if len(scanner.failed_files) > 15:
-                click.echo(f"  ... and {len(scanner.failed_files) - 15} more")
+            _show_processing_rate(stats)
 
-        
-        # Show other errors at the end
-        if hasattr(scanner, 'errors') and scanner.errors:
-            click.echo(f"\n⚠️  Other errors encountered ({len(scanner.errors)}):")
-            for error in scanner.errors[:10]:  # Show first 10 errors
-                click.echo(f"  {error}")
-            if len(scanner.errors) > 10:
-                click.echo(f"  ... and {len(scanner.errors) - 10} more")
+        _show_failed_files(scanner, stats)
+        _show_other_errors(scanner)
         
         if stats.duplicates_found > 0:
             click.echo(f"🔄 Duplicates found: {stats.duplicates_found}")
