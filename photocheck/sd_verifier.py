@@ -8,7 +8,7 @@ from typing import List, Optional
 from tqdm import tqdm
 
 from .database import DatabaseManager
-from .models import PhotoMetadata, VerificationResult
+from .models import PhotoMetadata, VerificationResult, FailureDetail
 from .photo_scanner import PhotoScanner
 
 
@@ -47,15 +47,17 @@ class SDCardVerifier:
         photo_files = []
         for root, dirs, files in os.walk(directory):
             for file in files:
-                if Path(file).suffix.lower() in scanner.SUPPORTED_EXTENSIONS:
-                    photo_files.append(Path(root) / file)
+                file_path = Path(root) / file
+                if (Path(file).suffix.lower() in scanner.SUPPORTED_EXTENSIONS and
+                    not scanner._should_skip_file(file_path)):
+                    photo_files.append(file_path)
         return photo_files
 
     def verify_sd_card(self, sd_path: Path, use_hash: bool = True) -> List[VerificationResult]:
         sd_path = Path(sd_path).resolve()
         
         # Create scanner with appropriate hash setting
-        scanner = PhotoScanner(self.db, calculate_hash=use_hash, num_threads=1)
+        scanner = PhotoScanner(self.db, calculate_hash=use_hash)
         photo_files = self._find_photo_files_for_verification(sd_path, scanner)
         
         if not photo_files:
@@ -102,6 +104,9 @@ class SDCardVerifier:
                     match_type="metadata_error"
                 )
 
+            failure_details = []
+
+            # Tier 0: Hash matching (if available)
             if use_hash and sd_metadata.file_hash:
                 nas_photo = self.db.find_by_hash(sd_metadata.file_hash)
                 if nas_photo:
@@ -110,54 +115,67 @@ class SDCardVerifier:
                         sd_photo_path=str(sd_photo_path),
                         found_in_nas=True,
                         nas_photo_path=nas_photo.file_path,
-                        match_type="hash",
-                        confidence=1.0,
+                        match_type="hash_match",
                         warnings=warnings
                     )
 
-            metadata_matches = self.db.find_by_metadata(
-                sd_metadata.filename,
-                sd_metadata.capture_datetime,
-                sd_metadata.file_size
-            )
-            
-            if metadata_matches:
-                best_match = self._find_best_metadata_match(sd_metadata, metadata_matches)
-                if best_match:
-                    warnings = self._detect_incomplete_metadata(best_match, sd_metadata)
-                    return VerificationResult(
-                        sd_photo_path=str(sd_photo_path),
-                        found_in_nas=True,
-                        nas_photo_path=best_match.file_path,
-                        match_type="metadata",
-                        confidence=self._calculate_confidence(sd_metadata, best_match),
-                        warnings=warnings
-                    )
+            # Pass 1: Filename-based matching
+            # Try direct filename match first
+            filename_matches = self.db.find_by_metadata(sd_metadata.filename, None, None)
 
-            # Fallback: try filename + file size (more reliable than filename alone)
-            filename_size_matches = self.db.find_by_metadata(
-                sd_metadata.filename,
-                None,  # No datetime requirement
-                sd_metadata.file_size
-            )
-            if filename_size_matches:
-                best_match = self._find_best_metadata_match(sd_metadata, filename_size_matches)
-                if best_match:
-                    warnings = self._detect_incomplete_metadata(best_match, sd_metadata)
-                    return VerificationResult(
-                        sd_photo_path=str(sd_photo_path),
-                        found_in_nas=True,
-                        nas_photo_path=best_match.file_path,
-                        match_type="filename_size",
-                        confidence=self._calculate_confidence(sd_metadata, best_match),
-                        warnings=warnings
-                    )
+            # If no direct match, try fuzzy pattern matching for renamed files
+            if not filename_matches and sd_metadata.capture_datetime:
+                filename_matches = self.db.find_by_fuzzy_pattern(
+                    sd_metadata.filename,
+                    sd_metadata.capture_datetime,
+                    None  # No file size constraint yet
+                )
+
+            # If we found filename matches, confirm with datetime + file_size
+            if filename_matches:
+                for candidate in filename_matches:
+                    if (candidate.capture_datetime == sd_metadata.capture_datetime and
+                        candidate.file_size == sd_metadata.file_size):
+                        warnings = self._detect_incomplete_metadata(candidate, sd_metadata)
+                        return VerificationResult(
+                            sd_photo_path=str(sd_photo_path),
+                            found_in_nas=True,
+                            nas_photo_path=candidate.file_path,
+                            match_type="full_match",
+                            warnings=warnings
+                        )
+                    else:
+                        # Record this as a failed match for reporting
+                        failure_details.append(FailureDetail(
+                            nas_photo_path=candidate.file_path,
+                            filename_match=True,  # We found it by filename
+                            datetime_match=candidate.capture_datetime == sd_metadata.capture_datetime,
+                            size_match=candidate.file_size == sd_metadata.file_size
+                        ))
+
+            # Pass 2: Metadata-only matching (datetime + file_size, ignoring filename)
+            if sd_metadata.capture_datetime and sd_metadata.file_size:
+                datetime_size_matches = self.db.find_by_datetime_size(
+                    sd_metadata.capture_datetime,
+                    sd_metadata.file_size
+                )
+                if datetime_size_matches:
+                    best_match = self._find_best_metadata_match(sd_metadata, datetime_size_matches)
+                    if best_match:
+                        warnings = self._detect_incomplete_metadata(best_match, sd_metadata)
+                        return VerificationResult(
+                            sd_photo_path=str(sd_photo_path),
+                            found_in_nas=True,
+                            nas_photo_path=best_match.file_path,
+                            match_type="datetime_size_match",
+                            warnings=warnings
+                        )
 
             return VerificationResult(
                 sd_photo_path=str(sd_photo_path),
                 found_in_nas=False,
                 match_type="not_found",
-                confidence=0.0
+                failure_details=failure_details
             )
 
         except Exception as e:
@@ -167,49 +185,30 @@ class SDCardVerifier:
                 match_type="error"
             )
 
-    def _find_best_metadata_match(self, sd_metadata: PhotoMetadata, 
+    def _find_best_metadata_match(self, sd_metadata: PhotoMetadata,
                                  candidates: List[PhotoMetadata]) -> Optional[PhotoMetadata]:
         if not candidates:
             return None
-        
-        if len(candidates) == 1:
-            return candidates[0]
 
-        scored_candidates = []
-        for candidate in candidates:
-            confidence = self._calculate_confidence(sd_metadata, candidate)
-            scored_candidates.append((confidence, candidate))
-        
-        scored_candidates.sort(key=lambda x: x[0], reverse=True)
-        
-        return scored_candidates[0][1] if scored_candidates[0][0] > 0.5 else None
+        # Just return the first candidate since we now use structured matching
+        # and candidates should already be filtered appropriately
+        return candidates[0]
 
-    def _calculate_confidence(self, sd_metadata: PhotoMetadata, 
-                            nas_metadata: PhotoMetadata) -> float:
-        score = 0.0
-        total_weight = 0.0
-        
-        if sd_metadata.filename == nas_metadata.filename:
-            score += 0.3
-        total_weight += 0.3
-        
-        if (sd_metadata.capture_datetime and nas_metadata.capture_datetime and 
-            sd_metadata.capture_datetime == nas_metadata.capture_datetime):
-            score += 0.4
-        total_weight += 0.4
-        
-        if sd_metadata.file_size == nas_metadata.file_size:
-            score += 0.2
-        total_weight += 0.2
-        
-        if (sd_metadata.width and nas_metadata.width and 
-            sd_metadata.height and nas_metadata.height and
-            sd_metadata.width == nas_metadata.width and 
-            sd_metadata.height == nas_metadata.height):
-            score += 0.1
-        total_weight += 0.1
-        
-        return score / total_weight if total_weight > 0 else 0.0
+
+    def _relativize_sd_path(self, full_path: str, sd_base_path: str) -> str:
+        """Convert full SD card path to relative path from specified folder"""
+        if not sd_base_path:
+            return full_path
+
+        try:
+            from pathlib import Path
+            full = Path(full_path)
+            base = Path(sd_base_path)
+            return str(full.relative_to(base))
+        except ValueError:
+            # If path is not relative to base, return filename only
+            return Path(full_path).name
+
 
     def generate_report(self, results: List[VerificationResult], sd_path: str = None) -> str:
         if not results:
@@ -240,34 +239,115 @@ class SDCardVerifier:
         
         if missing_count > 0:
             report_lines.extend([
-                "Missing Photos:",
+                f"Missing/Failed Files ({missing_count}):",
                 "-" * 20
             ])
 
-            # Sort missing photos alphabetically
-            missing_photos = [result.sd_photo_path for result in results if not result.found_in_nas]
-            missing_photos.sort()
+            # Get missing results and sort by path
+            missing_results = [result for result in results if not result.found_in_nas]
+            missing_results.sort(key=lambda r: r.sd_photo_path)
 
-            for photo_path in missing_photos:
-                report_lines.append(f"  {photo_path}")
+            # Group missing results by failure type
+            no_matches = [r for r in missing_results if not r.failure_details]
+            has_mismatches = [r for r in missing_results if r.failure_details]
+
+            # Show files with no matches at all
+            if no_matches:
+                report_lines.append(f"  No matches at all ({len(no_matches)}):")
+                report_lines.append("  " + "-" * 25)
+                for result in no_matches:
+                    report_lines.append(f"  {result.sd_photo_path}")
+                report_lines.append("")
+
+            # Show files with datetime or size mismatches
+            if has_mismatches:
+                report_lines.append(f"  Datetime or size mismatch ({len(has_mismatches)}):")
+                report_lines.append("  " + "-" * 30)
+                for result in has_mismatches:
+                    report_lines.append(f"  {result.sd_photo_path}")
+
+                    # Show failure details
+                    for detail in result.failure_details:
+                        report_lines.append(f"  └─ {detail.nas_photo_path}")
+
+                        # Format the yes/no status
+                        filename_status = "yes" if detail.filename_match else "no"
+                        datetime_status = "yes" if detail.datetime_match else "no"
+                        size_status = "yes" if detail.size_match else "no"
+
+                        report_lines.append(f"     Filename: {filename_status}, datetime: {datetime_status}, size: {size_status}")
+
+                    report_lines.append("")  # Empty line between entries
 
             report_lines.append("")
         
-        match_types = {}
-        for result in results:
-            if result.found_in_nas and result.match_type:
-                match_types[result.match_type] = match_types.get(result.match_type, 0) + 1
-        
-        if match_types:
-            report_lines.extend([
-                "Match Types:",
-                "-" * 20
-            ])
 
-            for match_type, count in match_types.items():
-                report_lines.append(f"  {match_type}: {count}")
+        # Add successful matches sections by match type
+        if found_count > 0:
+            successful_results = [result for result in results if result.found_in_nas]
+            successful_results.sort(key=lambda r: r.sd_photo_path)
 
-            report_lines.append("")
+            # Group results by match type
+            hash_matches = [r for r in successful_results if r.match_type == "hash_match"]
+            full_matches = [r for r in successful_results if r.match_type == "full_match"]
+            datetime_size_matches = [r for r in successful_results if r.match_type == "datetime_size_match"]
+
+            # Hash Matched section
+            if hash_matches:
+                report_lines.extend([
+                    f"Hash Matched ({len(hash_matches)}):",
+                    "-" * 20
+                ])
+                for result in hash_matches:
+                    relative_path = self._relativize_sd_path(result.sd_photo_path, sd_path)
+                    report_lines.append(f"  {relative_path}")
+                    report_lines.append(f"  └─ {result.nas_photo_path}")
+
+                    match_info = f"     Method: {result.match_type}"
+                    if result.warnings:
+                        warnings_text = ", ".join(result.warnings)
+                        match_info += f", Warning: {warnings_text}"
+                    report_lines.append(match_info)
+                    report_lines.append("")
+                report_lines.append("")
+
+            # Fully Matched section (filename + datetime + size)
+            if full_matches:
+                report_lines.extend([
+                    f"Fully Matched ({len(full_matches)}):",
+                    "-" * 20
+                ])
+                for result in full_matches:
+                    relative_path = self._relativize_sd_path(result.sd_photo_path, sd_path)
+                    report_lines.append(f"  {relative_path}")
+                    report_lines.append(f"  └─ {result.nas_photo_path}")
+
+                    match_info = f"     Method: {result.match_type}"
+                    if result.warnings:
+                        warnings_text = ", ".join(result.warnings)
+                        match_info += f", Warning: {warnings_text}"
+                    report_lines.append(match_info)
+                    report_lines.append("")
+                report_lines.append("")
+
+            # DateTime/Size Matched section (different filename)
+            if datetime_size_matches:
+                report_lines.extend([
+                    f"DateTime/Size Matched ({len(datetime_size_matches)}):",
+                    "-" * 20
+                ])
+                for result in datetime_size_matches:
+                    relative_path = self._relativize_sd_path(result.sd_photo_path, sd_path)
+                    report_lines.append(f"  {relative_path}")
+                    report_lines.append(f"  └─ {result.nas_photo_path}")
+
+                    match_info = f"     Method: {result.match_type}"
+                    if result.warnings:
+                        warnings_text = ", ".join(result.warnings)
+                        match_info += f", Warning: {warnings_text}"
+                    report_lines.append(match_info)
+                    report_lines.append("")
+                report_lines.append("")
 
         # Add warnings section
         warning_results = [r for r in results if r.found_in_nas and r.warnings]

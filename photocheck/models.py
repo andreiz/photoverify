@@ -28,17 +28,28 @@ class PhotoMetadata:
 
 
 @dataclass
+class FailureDetail:
+    """Details about a potential match that failed verification"""
+    nas_photo_path: str
+    filename_match: bool
+    datetime_match: bool
+    size_match: bool
+
+
+@dataclass
 class VerificationResult:
     sd_photo_path: str
     found_in_nas: bool
     nas_photo_path: Optional[str] = None
-    match_type: Optional[str] = None  # 'hash', 'metadata', 'filename'
-    confidence: float = 0.0
+    match_type: Optional[str] = None  # 'hash_match', 'full_match', 'datetime_size_match'
     warnings: List[str] = None  # Warnings about verification quality
+    failure_details: List[FailureDetail] = None  # Details about failed matches
 
     def __post_init__(self):
         if self.warnings is None:
             self.warnings = []
+        if self.failure_details is None:
+            self.failure_details = []
     
     
 @dataclass 

@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Iterator
+from .constants import DATABASE_TIMEOUT
 from .models import PhotoMetadata
 
 
@@ -18,7 +19,7 @@ class DatabaseManager:
             self._local.connection = sqlite3.connect(
                 self.db_path, 
                 check_same_thread=False,
-                timeout=30.0
+                timeout=DATABASE_TIMEOUT
             )
             self._local.connection.row_factory = sqlite3.Row
         return self._local.connection
@@ -106,21 +107,81 @@ class DatabaseManager:
             
             return self._row_to_photo(row) if row else None
 
-    def find_by_metadata(self, filename: str, capture_datetime: Optional[datetime] = None, 
+    def find_by_metadata(self, filename: str, capture_datetime: Optional[datetime] = None,
                         file_size: Optional[int] = None) -> List[PhotoMetadata]:
         with self.get_connection() as conn:
             query = 'SELECT * FROM photos WHERE filename = ? AND file_exists = 1'
             params = [filename]
-            
+
             if capture_datetime:
                 query += ' AND capture_datetime = ?'
                 params.append(capture_datetime)
-                
+
             if file_size:
                 query += ' AND file_size = ?'
                 params.append(file_size)
-                
+
             rows = conn.execute(query, params).fetchall()
+            return [self._row_to_photo(row) for row in rows]
+
+    def find_by_datetime_size(self, capture_datetime: Optional[datetime] = None,
+                             file_size: Optional[int] = None) -> List[PhotoMetadata]:
+        """Find files by capture datetime and file size only (ignoring filename)"""
+        if not capture_datetime or not file_size:
+            return []
+
+        with self.get_connection() as conn:
+            query = 'SELECT * FROM photos WHERE capture_datetime = ? AND file_size = ? AND file_exists = 1'
+            params = [capture_datetime, file_size]
+            rows = conn.execute(query, params).fetchall()
+            return [self._row_to_photo(row) for row in rows]
+
+    def find_by_fuzzy_pattern(self, original_filename: str, capture_datetime: Optional[datetime] = None,
+                             file_size: Optional[int] = None, prefix: str = "AZ") -> List[PhotoMetadata]:
+        """Find files that may have been renamed following patterns:
+        1. PREFIX_YYYYMMDD_HHMMSS_NNNN.EXT (time component first)
+        2. PREFIX_YYYYMMDD_0NNNN.EXT (5-digit padded fallback)
+        """
+        if not capture_datetime:
+            return []
+
+        # Extract number from original filename (e.g., DSCF3801.RAF -> 3801)
+        import re
+        from pathlib import Path
+
+        number_match = re.search(r'(\d{4,7})', original_filename)
+        if not number_match:
+            return []
+
+        number = number_match.group(1)
+        date_str = capture_datetime.strftime('%Y%m%d')
+        extension = Path(original_filename).suffix
+
+        with self.get_connection() as conn:
+            # Strategy 1: Try time component pattern first (AZ_YYYYMMDD_HHMMSS_NNNN.EXT)
+            time_pattern = f"{prefix}_{date_str}_%_{number}{extension}"
+            query1 = 'SELECT * FROM photos WHERE filename LIKE ? AND file_exists = 1'
+            params1 = [time_pattern]
+
+            if file_size:
+                query1 += ' AND file_size = ?'
+                params1.append(file_size)
+
+            rows = conn.execute(query1, params1).fetchall()
+            if rows:
+                return [self._row_to_photo(row) for row in rows]
+
+            # Strategy 2: Try 5-digit padded pattern (AZ_YYYYMMDD_0NNNN.EXT)
+            padded_number = number.zfill(5)  # Pad to 5 digits: 3801 -> 03801
+            padded_pattern = f"{prefix}_{date_str}_{padded_number}{extension}"
+            query2 = 'SELECT * FROM photos WHERE filename = ? AND file_exists = 1'
+            params2 = [padded_pattern]
+
+            if file_size:
+                query2 += ' AND file_size = ?'
+                params2.append(file_size)
+
+            rows = conn.execute(query2, params2).fetchall()
             return [self._row_to_photo(row) for row in rows]
 
     def mark_files_missing(self, base_path: str) -> int:
