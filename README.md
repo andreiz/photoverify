@@ -1,4 +1,4 @@
-# PhotoCheck
+# PhotoVerify
 
 A Python tool to verify that all photos from an SD card have been backed up to your NAS before erasing the card.
 
@@ -19,13 +19,13 @@ A Python tool to verify that all photos from an SD card have been backed up to y
 pip install -r requirements.txt
 
 # Scan your NAS and build database
-python photocheck.py scan /path/to/nas/photos
+python photoverify.py scan /path/to/nas/photos
 
 # Verify SD card photos
-python photocheck.py verify /media/sdcard
+python photoverify.py verify /media/sdcard
 
 # Clean up missing files
-python photocheck.py cleanup --mark-missing
+python photoverify.py cleanup --mark-missing
 ```
 
 ## Usage

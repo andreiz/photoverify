@@ -1,8 +1,8 @@
-# PhotoCheck Configuration Example
+# PhotoVerify Configuration Example
 # Copy to config.yaml and customize
 
 database:
-  path: "~/photocheck.db"  # Database file location
+  path: "~/photoverify.db"  # Database file location
 
 scanning:
   threads: 8              # Number of worker threads for scanning

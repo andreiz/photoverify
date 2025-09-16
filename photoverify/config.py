@@ -31,8 +31,8 @@ class Config:
             # Try to find config file in common locations
             possible_paths = [
                 'config.yaml',
-                '~/.photocheck/config.yaml',
-                '~/.config/photocheck/config.yaml'
+                '~/.photoverify/config.yaml',
+                '~/.config/photoverify/config.yaml'
             ]
             
             for path in possible_paths:

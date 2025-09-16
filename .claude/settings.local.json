@@ -9,7 +9,8 @@
       "WebSearch",
       "Read(//private/tmp/test_photos/**)",
       "Bash(echo \"Return code: $?\")",
-      "Bash(sqlite3:*)"
+      "Bash(sqlite3:*)",
+      "Bash(git rm:*)"
     ],
     "deny": [],
     "ask": []

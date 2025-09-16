@@ -1,7 +1,7 @@
-# Claude Configuration for PhotoCheck
+# Claude Configuration for PhotoVerify
 
 ## Project Overview
-PhotoCheck is a Python tool for verifying photo backups between SD cards and NAS storage.
+PhotoVerify is a Python tool for verifying photo backups between SD cards and NAS storage.
 
 ## Development Commands
 
@@ -19,27 +19,27 @@ python -m black .
 ### Running the Application
 ```bash
 # Scan NAS (full scan)
-python photocheck.py scan /path/to/nas --db photos.db
+python photoverify.py scan /path/to/nas --db photos.db
 
 # Update scan (faster - marks existing as verified, adds new)
-python photocheck.py scan --update /path/to/nas --db photos.db
+python photoverify.py scan --update /path/to/nas --db photos.db
 
 # Exclude specific directories
-python photocheck.py scan --exclude iCloud-sync --exclude iPhone-sync /path/to/nas
+python photoverify.py scan --exclude iCloud-sync --exclude iPhone-sync /path/to/nas
 
-# Verify SD card  
-python photocheck.py verify /media/sdcard --db photos.db
+# Verify SD card
+python photoverify.py verify /media/sdcard --db photos.db
 
 # Clean up database
-python photocheck.py cleanup --mark-missing --db photos.db
+python photoverify.py cleanup --mark-missing --db photos.db
 
 # Use config file
-python photocheck.py --config config.yaml scan /nas/photos
+python photoverify.py --config config.yaml scan /nas/photos
 ```
 
 ## Project Structure
-- `photocheck.py` - CLI interface
-- `photocheck/` - Main module directory
+- `photoverify.py` - CLI interface
+- `photoverify/` - Main module directory
   - `__init__.py` - Package initialization and exports
   - `photo_scanner.py` - NAS scanning and metadata extraction
   - `sd_verifier.py` - SD card verification logic
@@ -55,7 +55,7 @@ python photocheck.py --config config.yaml scan /nas/photos
 - pyyaml: Configuration files
 
 ## Supported File Formats
-PhotoCheck supports 45+ image formats including:
+PhotoVerify supports 45+ image formats including:
 
 ### Standard Formats
 - JPEG (.jpg, .jpeg)

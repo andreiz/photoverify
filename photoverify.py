@@ -4,8 +4,8 @@ from pathlib import Path
 
 import click
 
-from photocheck import DatabaseCleaner, Config, DatabaseManager, PhotoScanner, SDCardVerifier
-from photocheck.constants import MAX_FAILED_FILES_DISPLAY, MAX_ERRORS_DISPLAY
+from photoverify import DatabaseCleaner, Config, DatabaseManager, PhotoScanner, SDCardVerifier
+from photoverify.constants import MAX_FAILED_FILES_DISPLAY, MAX_ERRORS_DISPLAY
 
 
 def _show_failed_files(scanner, stats):
@@ -45,7 +45,7 @@ def _show_other_errors(scanner):
 @click.option('--db', help='Path to SQLite database file (overrides config)')
 @click.pass_context
 def cli(ctx, config, db):
-    """PhotoCheck - Verify SD card photos are backed up to NAS"""
+    """PhotoVerify - Verify SD card photos are backed up to NAS"""
     ctx.ensure_object(dict)
     
     # Load configuration
@@ -276,7 +276,7 @@ def stats(ctx):
     
     stats = cleaner.get_cleanup_stats()
     
-    click.echo("PhotoCheck Database Statistics")
+    click.echo("PhotoVerify Database Statistics")
     click.echo("=" * 35)
     click.echo(f"Total photos: {stats['total_photos']}")
     click.echo(f"Existing photos: {stats['existing_photos']}")
