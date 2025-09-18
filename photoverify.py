@@ -50,13 +50,22 @@ def cli(ctx, config, db):
     
     # Load configuration
     ctx.obj['config'] = Config(config)
-    
+
+    # Print config file location
+    config_file_path = ctx.obj['config'].get_config_file_path()
+    if config_file_path:
+        click.echo(f"Using config file: {config_file_path}")
+    else:
+        click.echo("Using default configuration (no config file found)")
+
     # Database path: CLI option > config file > default
     if db:
         db_path = str(Path(db).expanduser().resolve())
+        click.echo(f"Using database: {db_path} (from CLI argument)")
     else:
         db_path = ctx.obj['config'].get_db_path()
-    
+        click.echo(f"Using database: {db_path}")
+
     ctx.obj['db_path'] = db_path
     ctx.obj['db_manager'] = DatabaseManager(db_path)
 
@@ -238,11 +247,13 @@ def cleanup(ctx, mark_missing, remove_missing, verify_paths, remove_duplicates, 
         return
     
     if verify_paths:
-        click.echo("Verifying file paths...")
-        result = cleaner.verify_file_existence()
-        click.echo(f"Checked {result['total_checked']} files")
-        click.echo(f"Found {result['existing_files']} existing files")
-        click.echo(f"Marked {result['missing_files']} as missing")
+        if base_path:
+            result = cleaner.verify_file_existence(list(base_path))
+        else:
+            result = cleaner.verify_file_existence()
+        click.echo(f"Checked {result['total_checked']:,} files")
+        click.echo(f"Found {result['existing_files']:,} existing files")
+        click.echo(f"Marked {result['missing_files']:,} as missing")
     
     if mark_missing and base_path:
         click.echo(f"Marking missing files in {len(base_path)} base paths...")

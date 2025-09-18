@@ -7,6 +7,7 @@ import yaml
 
 class Config:
     def __init__(self, config_path: Optional[str] = None):
+        self.config_file_path = None
         self.config = self._load_config(config_path)
     
     def _load_config(self, config_path: Optional[str]) -> Dict[str, Any]:
@@ -43,9 +44,10 @@ class Config:
         
         if config_path and Path(config_path).exists():
             try:
+                self.config_file_path = str(Path(config_path).resolve())
                 with open(config_path, 'r') as f:
                     file_config = yaml.safe_load(f) or {}
-                
+
                 # Merge with defaults
                 merged_config = default_config.copy()
                 for key, value in file_config.items():
@@ -53,11 +55,11 @@ class Config:
                         merged_config[key].update(value)
                     else:
                         merged_config[key] = value
-                
+
                 return merged_config
             except Exception as e:
                 print(f"Warning: Failed to load config from {config_path}: {e}")
-        
+
         return default_config
     
     def get(self, key: str, default: Any = None) -> Any:
@@ -85,3 +87,7 @@ class Config:
     def get_verification_config(self) -> Dict[str, Any]:
         """Get verification configuration"""
         return self.get('verification', {})
+
+    def get_config_file_path(self) -> Optional[str]:
+        """Get the path to the loaded configuration file"""
+        return self.config_file_path

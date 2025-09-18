@@ -2,6 +2,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import List
 
+import click
+from tqdm import tqdm
+
 from .database import DatabaseManager
 
 
@@ -20,31 +23,76 @@ class DatabaseCleaner:
             
         return results
 
-    def verify_file_existence(self) -> dict:
-        """Check all database entries and mark missing files"""
+    def verify_file_existence(self, base_paths: List[str] = None) -> dict:
+        """Check database entries and mark missing files"""
+        # Build query based on whether base paths are specified
+        if base_paths:
+            # Only check files under the specified base paths
+            base_conditions = []
+            params = []
+            for base_path in base_paths:
+                base_path = str(Path(base_path).resolve())
+                base_conditions.append('file_path LIKE ?')
+                params.append(f"{base_path}%")
+
+            where_clause = f"file_exists = 1 AND ({' OR '.join(base_conditions)})"
+        else:
+            where_clause = "file_exists = 1"
+            params = []
+
         with self.db.get_connection() as conn:
-            cursor = conn.execute('SELECT file_path FROM photos WHERE file_exists = 1')
-            file_paths = [row['file_path'] for row in cursor.fetchall()]
-        
+            cursor = conn.execute(f'SELECT COUNT(*) FROM photos WHERE {where_clause}', params)
+            total_count = cursor.fetchone()[0]
+
+            if total_count == 0:
+                return {'existing_files': 0, 'missing_files': 0, 'total_checked': 0}
+
+        click.echo(f"Checking {total_count:,} files for existence...")
+
+        # Process in batches to avoid memory issues
+        batch_size = 1000
         existing_count = 0
         missing_count = 0
-        
-        for file_path in file_paths:
-            if Path(file_path).exists():
-                self.db.mark_file_exists(file_path)
-                existing_count += 1
-            else:
+
+        with tqdm(total=total_count, desc="Verifying files", unit="files") as pbar:
+            offset = 0
+            while offset < total_count:
                 with self.db.get_connection() as conn:
-                    conn.execute('''
-                        UPDATE photos SET file_exists = 0, last_verified = CURRENT_TIMESTAMP
-                        WHERE file_path = ?
-                    ''', (file_path,))
-                missing_count += 1
-        
+                    cursor = conn.execute(f'''
+                        SELECT file_path FROM photos
+                        WHERE {where_clause}
+                        ORDER BY file_path
+                        LIMIT ? OFFSET ?
+                    ''', params + [batch_size, offset])
+                    batch_paths = [row['file_path'] for row in cursor.fetchall()]
+
+                if not batch_paths:
+                    break
+
+                # Check existence for this batch
+                batch_updates = []
+                for file_path in batch_paths:
+                    if Path(file_path).exists():
+                        existing_count += 1
+                    else:
+                        batch_updates.append(file_path)
+                        missing_count += 1
+                    pbar.update(1)
+
+                # Update missing files in batch
+                if batch_updates:
+                    with self.db.get_connection() as conn:
+                        conn.executemany('''
+                            UPDATE photos SET file_exists = 0, last_verified = CURRENT_TIMESTAMP
+                            WHERE file_path = ?
+                        ''', [(path,) for path in batch_updates])
+
+                offset += batch_size
+
         return {
             'existing_files': existing_count,
             'missing_files': missing_count,
-            'total_checked': len(file_paths)
+            'total_checked': total_count
         }
 
     def remove_missing_files(self) -> int:

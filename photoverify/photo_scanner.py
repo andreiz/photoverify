@@ -24,6 +24,8 @@ class PhotoScanner:
     SUPPORTED_EXTENSIONS = {
         # Standard image formats
         '.jpg', '.jpeg', '.png', '.tiff', '.tif', '.bmp', '.gif',
+        # Modern image formats
+        '.heic', '.heif',
         # Generic RAW
         '.raw',
         # Canon RAW formats
@@ -205,21 +207,14 @@ class PhotoScanner:
             existing_count = 0
 
             for metadata in successful_metadata:
-                # Check if this photo already exists in database (by filename and file_size)
-                existing = self.db.find_by_metadata(
-                    metadata.filename,
-                    None,  # Don't match on datetime (format issues)
-                    metadata.file_size
-                )
+                # Check if this exact file path already exists in database
+                existing = self.db.find_by_path(metadata.file_path)
 
                 if self.debug:
-                    print(f"Debug: Checking {metadata.filename} (size: {metadata.file_size}), found {len(existing)} existing records")
-                    if not existing:
-                        # Show what IS in the database for this filename
-                        all_with_name = self.db.find_by_metadata(metadata.filename, None, None)
-                        print(f"Debug: Files with same name in DB: {[(f.filename, f.file_size) for f in all_with_name]}")
+                    exists_status = "found" if existing else "not found"
+                    print(f"Debug: Checking {metadata.file_path}, {exists_status}")
 
-                if existing:  # existing is a list, check if not empty
+                if existing:  # existing is a PhotoMetadata object or None
                     # Mark existing file as verified
                     self.db.mark_file_exists(metadata.file_path)
                     existing_count += 1

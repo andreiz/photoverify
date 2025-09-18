@@ -124,6 +124,15 @@ class DatabaseManager:
             rows = conn.execute(query, params).fetchall()
             return [self._row_to_photo(row) for row in rows]
 
+    def find_by_path(self, file_path: str) -> Optional[PhotoMetadata]:
+        """Find a photo by its exact file path"""
+        with self.get_connection() as conn:
+            row = conn.execute(
+                'SELECT * FROM photos WHERE file_path = ? AND file_exists = 1 LIMIT 1',
+                (file_path,)
+            ).fetchone()
+            return self._row_to_photo(row) if row else None
+
     def find_by_datetime_size(self, capture_datetime: Optional[datetime] = None,
                              file_size: Optional[int] = None) -> List[PhotoMetadata]:
         """Find files by capture datetime and file size only (ignoring filename)"""
