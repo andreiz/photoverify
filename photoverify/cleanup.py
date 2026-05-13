@@ -23,6 +23,20 @@ class DatabaseCleaner:
             
         return results
 
+    def show_missing_file(self, base_paths: List[str] = None) -> dict:
+        """Show missing files, optionally filtered by base paths"""
+        results = {}
+
+        if base_paths:
+            for base_path in base_paths:
+                base_path = str(Path(base_path).resolve())
+                missing_files = self.db.get_missing_files(base_path)
+                results[base_path] = missing_files
+        else:
+            missing_files = self.db.get_missing_files()
+            results['all'] = missing_files
+        return results
+
     def verify_file_existence(self, base_paths: List[str] = None) -> dict:
         """Check database entries and mark missing files"""
         # Build query based on whether base paths are specified

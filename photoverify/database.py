@@ -192,6 +192,18 @@ class DatabaseManager:
 
             rows = conn.execute(query2, params2).fetchall()
             return [self._row_to_photo(row) for row in rows]
+        
+    def get_missing_files(self, base_path: Optional[str] = None) -> List[str]:
+        with self.get_connection() as conn:
+            if base_path:
+                cursor = conn.execute('''
+                    SELECT file_path FROM photos 
+                    WHERE file_exists = 0 AND file_path LIKE ?
+                ''', (f"{base_path}%",))
+            else:
+                cursor = conn.execute('SELECT file_path FROM photos WHERE file_exists = 0')
+                
+            return [row['file_path'] for row in cursor.fetchall()]
 
     def mark_files_missing(self, base_path: str) -> int:
         with self.get_connection() as conn:

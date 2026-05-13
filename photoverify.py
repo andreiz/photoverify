@@ -222,6 +222,8 @@ def verify(ctx, path, mode, threads, report):
               help='Mark missing files without removing them')
 @click.option('--remove-missing', is_flag=True, 
               help='Remove entries for missing files')
+@click.option('--show-missing', is_flag=True,
+              help='Show missing files')
 @click.option('--verify-paths', is_flag=True, 
               help='Check all file paths and mark missing ones')
 @click.option('--remove-duplicates', is_flag=True, 
@@ -229,12 +231,12 @@ def verify(ctx, path, mode, threads, report):
 @click.option('--base-path', multiple=True, 
               help='Base paths to check (can be specified multiple times)')
 @click.pass_context
-def cleanup(ctx, mark_missing, remove_missing, verify_paths, remove_duplicates, base_path):
+def cleanup(ctx, mark_missing, remove_missing, show_missing, verify_paths, remove_duplicates, base_path):
     """Clean up database entries"""
     db_manager = ctx.obj['db_manager']
     cleaner = DatabaseCleaner(db_manager)
     
-    if not any([mark_missing, remove_missing, verify_paths, remove_duplicates]):
+    if not any([mark_missing, remove_missing, show_missing, verify_paths, remove_duplicates]):
         # Show cleanup stats by default
         stats = cleaner.get_cleanup_stats()
         click.echo("Database Statistics:")
@@ -270,6 +272,21 @@ def cleanup(ctx, mark_missing, remove_missing, verify_paths, remove_duplicates, 
                 click.echo(f"Removed {removed_count} entries")
         else:
             click.echo("No missing files to remove")
+
+    if show_missing:
+        if base_path:
+            results = cleaner.show_missing_file(list(base_path))
+            for path, files in results.items():
+                click.echo(f"\nMissing files in base path: {path}")
+                for file in files:
+                    click.echo(f"  {file}")
+                click.echo(f"Total missing files: {len(files)}")
+        else:
+            files = cleaner.get_missing_files()
+            click.echo("\nAll missing files:")
+            for file in files:
+                click.echo(f"  {file}")
+            click.echo(f"Total missing files: {len(files)}")
     
     if remove_duplicates:
         click.echo("Removing duplicate entries...")
